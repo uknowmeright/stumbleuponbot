@@ -7,16 +7,20 @@ A local TikTok pipeline for the weird web. Scrapes `stumbleupon.cc`, records sho
 ## Setup
 
 ```bash
-# 1. Install (editable, with dev extras)
-pip install -e ".[dev]"
+# 1. Create a venv and install the package (editable, with dev extras)
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/pip install -e ".[dev]"
 
 # 2. Copy env template and fill in real values
 cp .env.example .env
 $EDITOR .env
 
-# 3. Initialize the database (happens automatically on first run too)
-python -m stumbleupon.main show-config  # smoke test: settings load
+# 3. Smoke test: settings load
+.venv/bin/python -m stumbleupon.main show-config
 ```
+
+Python 3.11+ is required (per `pyproject.toml`). The setup above was verified on Python 3.14.5 (Homebrew).
 
 ## Dev loop
 
