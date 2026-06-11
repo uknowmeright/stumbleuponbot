@@ -7,7 +7,7 @@ calls into here. Returns dataclasses, not dicts.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .db import get_connection
@@ -100,7 +100,7 @@ def edit_caption(db_path: Path, clip_id: int, new_caption: str) -> None:
 def get_approved_ready_to_post(db_path: Path, now: datetime | None = None) -> list[Clip]:
     """Approved clips whose scheduled_for is in the past (or unset)."""
     if now is None:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
     with get_connection(db_path) as conn:
         rows = conn.execute(
             "SELECT * FROM clips "
