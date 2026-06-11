@@ -7,12 +7,11 @@ calls into here. Returns dataclasses, not dicts.
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 from .db import get_connection
-from .models import CLIP_STATUSES, Clip, Posting
+from .models import Clip, Posting
 
 
 def _row_to_clip(row: sqlite3.Row) -> Clip:

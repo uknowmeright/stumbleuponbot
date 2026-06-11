@@ -5,6 +5,7 @@ All other modules receive a `Settings` instance; they do not read env vars direc
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,7 +54,3 @@ def load_settings(env_file: Path | None = None) -> Settings:
         proxy_url=sources.get("PROXY_URL") or None,
         openai_api_key=sources.get("OPENAI_API_KEY") or None,
     )
-
-
-# Re-export os for the test's use above.
-import os  # noqa: E402
