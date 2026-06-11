@@ -57,6 +57,7 @@ class Clip:
     reviewed_at: datetime | None = None
     reviewed_by: str | None = None
     edited_caption: str | None = None
+    scheduled_for: datetime | None = None
 
     def __post_init__(self) -> None:
         if self.status not in CLIP_STATUSES:

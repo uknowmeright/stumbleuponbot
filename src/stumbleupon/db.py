@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS clips (
   review_notes    TEXT,
   reviewed_at     TIMESTAMP,
   reviewed_by     TEXT,
-  edited_caption  TEXT
+  edited_caption  TEXT,
+  scheduled_for   TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS sounds (
