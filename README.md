@@ -10,6 +10,7 @@ A local TikTok pipeline for the weird web. Scrapes `stumbleupon.cc`, records sho
 # 1. Create a venv and install the package (editable, with dev extras)
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
+.venv/bin/pip install "hatchling>=1.30" "build>=1.5"   # see note below
 .venv/bin/pip install -e ".[dev]"
 
 # 2. Copy env template and fill in real values
@@ -21,6 +22,8 @@ $EDITOR .env
 ```
 
 Python 3.11+ is required (per `pyproject.toml`). The setup above was verified on Python 3.14.5 (Homebrew).
+
+**Note on the build-tool upgrade:** On Python 3.14, pip's bundled `hatchling` (the build backend) is too old to produce a working editable install — it generates a `.pth` file the runtime can't load, so `python -c "import stumbleupon"` fails even though `pytest` works (because `pyproject.toml` sets `pythonpath = ["src"]` for pytest). Upgrading `hatchling` to >=1.30 and `build` to >=1.5 fixes this. The same fix may apply on other Python 3.14 setups; on 3.11-3.13 the bundled tools usually work.
 
 ## Dev loop
 
