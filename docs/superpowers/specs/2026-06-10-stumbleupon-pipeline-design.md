@@ -1,14 +1,14 @@
 # StumbleUpon Pipeline — Design Spec
 
 **Date:** 2026-06-10
-**Status:** Draft (pending user review)
+**Status:** Finalized (v1 scope locked)
 **Scope:** v1 — TikTok-first local pipeline
 
 ## 1. Overview
 
 A scheduled Python pipeline that runs on a single Mac, scrapes "weird web" sites from a StumbleUpon-style directory, records short video clips of using each site, generates captions and hashtags with an LLM, attaches a trending TikTok sound, and queues the result for human review before posting to TikTok.
 
-The system targets a cadence of 3-5 posts per day with a human-in-the-loop approval gate, then auto-posts approved clips at scheduled times.
+The system targets a cadence of 1-2 posts per day with a human-in-the-loop approval gate, then auto-posts approved clips at scheduled times. Lower volume chosen so each clip gets more review attention and the channel quality stays high.
 
 ## 2. Goals & Non-Goals
 
@@ -16,9 +16,9 @@ The system targets a cadence of 3-5 posts per day with a human-in-the-loop appro
 - Scrape 10-30 fresh sites per day from `stumbleupon.cc`
 - Record ~30s vertical video clips of using each site
 - Generate on-brand captions and hashtags via Claude API
-- Attach trending TikTok sounds (with royalty-free fallback)
+- Attach trending TikTok sounds (no fallback in v1 — surface to review queue on failure)
 - Surface clips in a local review queue before they go public
-- Auto-post approved clips to TikTok, spread across the day
+- Auto-post approved clips to TikTok via Buffer + Cloudflare R2, spread across the day
 - Be operable by one person from a single laptop
 
 ### Non-goals (v1)
@@ -36,7 +36,7 @@ The system targets a cadence of 3-5 posts per day with a human-in-the-loop appro
 
 ```
                 ┌──────────┐
-                │ launchd  │  every 4h, 8am–midnight
+                │ launchd  │  2x/day, 10am and 8pm
                 └────┬─────┘
                      │ triggers
                      ▼
@@ -46,9 +46,10 @@ The system targets a cadence of 3-5 posts per day with a human-in-the-loop appro
             │ 1. scrape      │  stumbleupon.cc → fresh sites
             │ 2. record      │  playwright → webm per site
             │ 3. caption     │  claude api → caption + hashtags
-            │ 4. pick sound  │  trending sounds (or fallback)
+            │ 4. pick sound  │  trending sounds (skip if unavailable)
             │ 5. compose     │  ffmpeg → final mp4
-            │ 6. queue       │  clips.status = pending
+            │ 6. upload      │  cloudflare r2 → public url
+            │ 7. queue       │  clips.status = pending
             └────────┬───────┘
                      │ writes to
                      ▼
@@ -65,7 +66,7 @@ The system targets a cadence of 3-5 posts per day with a human-in-the-loop appro
                  ▼
         ┌────────────────────────┐
         │  poster (launchd 15m)  │  python -m stumbleupon post
-        │  ayrshare → tiktok     │
+        │  buffer → tiktok       │
         └────────────────────────┘
 ```
 
@@ -190,7 +191,7 @@ CREATE TABLE postings (
 - `clips.status` has 6 states: `pending` → `approved` | `rejected` | `needs_attention` → `posted` | `failed`. Status transitions are the queue. `needs_attention` is a "stuck but don't auto-retry" state used when, e.g., the LLM call exhausted retries.
 - `clips.edited_caption` is separate from `caption` to keep the original LLM output for comparison. The poster uses `edited_caption` if set, else `caption`.
 - `sounds` round-robin: we never repeat the same sound back-to-back; catalog refreshes daily.
-- `postings.scheduled_for` spreads 3-5 posts/day across waking hours to avoid burst behavior.
+- `postings.scheduled_for` spreads 1-2 posts/day across waking hours to avoid burst behavior.
 - Files (videos, audio) live on disk; the DB stores paths. Smaller DB, easier to inspect.
 - A clip's `recording_path` stays around after `final_path` exists, until the clip is `posted`, so a failed compose step doesn't require re-recording.
 
@@ -218,6 +219,7 @@ Each component is a small module with one job. They communicate through the DB a
 
 ### 5.3 `captioner.py` — generate caption + hashtags
 - For each clip, builds a prompt with: site title, URL, description, sample of past successful captions (3-5 from `posted` clips), and the channel's tone guide.
+- The tone guide lives at **`docs/tone-guide.md`** — read on every call. Treat as source of truth for voice, length, banned words, hashtag style.
 - Calls **Claude API** (`claude-sonnet-4-6`) — chosen because the user is already in the Claude ecosystem and it's the strongest writer for short, punchy copy.
 - Output enforced via tool use / structured output: `{caption: str, hashtags: [str]}`.
 - Length target: 80-150 chars for the caption (TikTok sweet spot).
@@ -230,8 +232,8 @@ Each component is a small module with one job. They communicate through the DB a
 - Downloads audio for the top 5-10 sounds via yt-dlp or direct URL → `data/sounds/<id>.mp3`.
 - Refreshes daily (or on demand) so the catalog stays current.
 - Round-robin selection: pick the highest-trending sound that hasn't been used in the last 3 days.
-- **Fallback:** if scraping fails entirely, fall back to a bundled royalty-free sound (configurable in `.env`) so posting doesn't halt.
-- Returns: a single `Sound` row.
+- **Failure behavior (v1):** if the scrape fails or the catalog is empty, do **not** invent a fallback. The clip is queued with `status='needs_attention'` and surfaced in the review queue so a human can attach a sound manually (or re-run the pipeline). Avoids the licensing question of shipping a bundled track.
+- Returns: a single `Sound` row, or `None` on failure.
 
 ### 5.5 `composer.py` — combine video + sound into final mp4
 - Uses **ffmpeg** via the `ffmpeg-python` library.
@@ -257,10 +259,15 @@ Each component is a small module with one job. They communicate through the DB a
 - Persists state so quitting mid-session resumes correctly.
 
 ### 5.8 `poster.py` — post approved clips to TikTok
-- For MVP: posts via **Ayrshare** (single API key, handles all three platforms when added later). ~$20/mo.
-- **Why Ayrshare over the official TikTok API:** the official API requires app review and approval that takes weeks/months; Ayrshare is already approved and is designed for exactly this multi-platform posting use case.
-- Ayrshare accepts: video URL (we either upload to S3-compatible storage or pass a local path Ayrshare fetches), caption, hashtags.
-- For local v1: generate a temporary public URL for the mp4 via a 1-hour-TTL S3 upload, or use Ayrshare's own upload endpoint. Decision deferred to implementation.
+- Posts via the **Buffer API** (GraphQL). Buffer handles the multi-platform OAuth and the TikTok-specific upload quirks.
+- **Why Buffer over Ayrshare:** Buffer's free tier is $0/mo with 3,000 API requests/month and full TikTok business profile support. Ayrshare's cheapest equivalent is $149/mo. ~30× cost difference, same outcome.
+- **Why Buffer over the direct TikTok API:** the direct API requires app review (weeks/months) and OAuth per account. Buffer already has TikTok approval.
+- **Why Buffer free tier is enough:** at 1-2 posts/day with the rest of the pipeline being local, we estimate 100-300 API requests/day. 3,000/month is tight but workable; if we hit the limit, upgrade to Buffer Essentials ($5/mo, 7,500 req/mo) for headroom.
+- **Video hosting:** Buffer's API requires a publicly accessible HTTPS URL to the mp4. We host on **Cloudflare R2** (S3-compatible, 10GB free storage, 10M free requests/month — far more than we need). The pipeline uploads to R2 in step 6 of the orchestrator and passes the resulting public URL to Buffer.
+- **Buffer call shape** (from Buffer's GraphQL API):
+  - `text` — caption + hashtags concatenated (Buffer has no separate hashtag field)
+  - `dueAt` — ISO 8601 UTC, for scheduled posting
+  - `assets: [{ video: { url: "<r2 public url>" } }]`
 - Sets `postings.scheduled_for` if more than 2 clips are approved at once, spreading them across the next 12 hours.
 - On success: marks clip `posted`, stores external URL.
 - On failure: marks `failed`, stores error, leaves clip as `approved` for retry.
@@ -277,7 +284,7 @@ Each component is a small module with one job. They communicate through the DB a
 
 `launchd` is macOS's built-in scheduler — no extra services, no Docker, no cron weirdness. Two plist files in `~/Library/LaunchAgents/`:
 
-- `com.user.stumbleupon.pipeline.plist` — runs every 4 hours during waking hours (8am, 12pm, 4pm, 8pm). A 30s recording × ~5 sites per run × 4 runs/day ≈ 20-30 minutes of compute per day. stumbleupon.cc probably doesn't refresh faster than this, and 4 runs gives a steady drip of fresh content to review. Tunable in the plist.
+- `com.user.stumbleupon.pipeline.plist` — runs 2×/day at **10am and 8pm**. A 30s recording × ~3 sites per run × 2 runs/day ≈ 6-10 minutes of compute per day, leaving plenty of room for the human review step. Tunable in the plist.
 - `com.user.stumbleupon.poster.plist` — runs every 15 minutes, picks clips where `status='approved'` and `scheduled_for <= now()`.
 
 **v1 caveat:** `launchd` will not run scheduled jobs while the Mac is asleep. If the lid is closed overnight, the morning job runs as soon as the Mac wakes. If the Mac is shut down, jobs are missed (no catch-up). Acceptable for v1; if the user travels with the laptop closed for days, they should set "Wake for network access" in Energy settings or leave the laptop open.
@@ -299,15 +306,16 @@ That way nothing requires you to remember to check.
 | One site's recording fails (timeout, crash) | Mark site `failed`, log, continue with next site. The batch survives. |
 | All recordings fail | Pipeline exits non-zero, you get a notification. |
 | Claude API rate limit / 5xx | Retry with exponential backoff (3 attempts). If still failing, queue the clip with an empty caption and mark `needs_attention`. |
-| TikTok trending sounds scrape fails | Use the fallback royalty-free sound from `.env`. Log a warning. |
+| TikTok trending sounds scrape fails | Mark the clip `needs_attention`, surface in review queue. No bundled fallback in v1. |
 | ffmpeg compose fails | Keep the recording, mark the clip `failed`, surface in review queue so you can re-run composer manually. |
-| Ayrshare upload fails | Mark posting `failed`, store error. Retry next scheduled run. After 3 failures, surface in review queue. |
+| R2 upload fails | Mark the clip `needs_attention` (recording is preserved, just no public URL). Don't burn a Buffer slot on a clip we can't link. |
+| Buffer API call fails | Mark posting `failed`, store error. Retry next scheduled run. After 3 failures, surface in review queue. |
 | Posting succeeds but platform rejects later (DMCA, ToS strike) | Manual handling. We store the external URL; you take it from there. We can't auto-detect this. |
 | `launchd` double-fires | Idempotent: scraper's `ON CONFLICT` + status flags mean reruns do nothing harmful. |
 
-**Secrets management:** `.env` file (gitignored) with: Claude API key, Ayrshare API key, OpenAI key (optional, for Whisper captions), proxy URL (optional), ad-block keywords list.
+**Secrets management:** `.env` file (gitignored) with: Claude API key, Buffer API key, Cloudflare R2 access key/secret/bucket name, OpenAI key (optional, for Whisper captions), proxy URL (optional), ad-block keywords list.
 
-**Quota tracking:** daily GET to Ayrshare's quota endpoint; refuse to post if at monthly limit. Better than failing mid-month.
+**Quota tracking:** daily GET to Buffer's profile endpoint to confirm we're under the 3,000 req/month free tier limit. Refuse to post if we'd push the month over the cap; surface in the review queue instead.
 
 ## 8. Testing
 
@@ -351,7 +359,7 @@ Skipped for v1. Run `pytest` locally. If we push to a remote later, GitHub Actio
 ## 9. Open Questions / Future Work
 
 - Captions burned into the video (lower thirds) — currently off by default; turn on in `.env` if engagement data supports it.
-- Adding X and YouTube Shorts as posting targets — just two new modules + Ayrshare config.
+- Adding X and YouTube Shorts as posting targets — just two new channels in Buffer + R2 upload (Buffer already has these channels; we just create new channel IDs in our config and add the same `post → Buffer` flow).
 - Web UI for review — minor upgrade to `reviewer.py` if CLI gets annoying.
 - Site-quality scoring — use a small LLM call during scraping to score sites by "weirdness" so we can pick the most interesting ones.
 - Engagement loop — read post stats, double down on what's working.
