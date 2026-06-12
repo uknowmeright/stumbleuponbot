@@ -44,16 +44,17 @@ See [docs/superpowers/specs/2026-06-10-stumbleupon-pipeline-design.md](docs/supe
 ```
 src/stumbleupon/
 ├── config.py    # Settings loaded from .env
-├── models.py    # Site, Clip, Sound, Posting dataclasses
 ├── db.py        # SQLite schema + connection helpers
+├── main.py      # CLI entry point
+├── models.py    # Site, Clip, Sound, Posting dataclasses
 ├── queue.py     # The only module that mutates clips.status
-└── main.py      # CLI entry point
+└── scraper.py   # stumbleupon.cc → fresh sites (Supabase API)
 ```
 
 ## Roadmap
 
 This plan covers the scaffold. Future plans:
-- Scraper (stumbleupon.cc crawl)
+- Scraper (stumbleupon.cc crawl) — done (now uses Supabase API)
 - Recorder (Playwright 30s vertical video)
 - Captioner (Claude + tone guide)
 - Sounds (TikTok trending scrape)

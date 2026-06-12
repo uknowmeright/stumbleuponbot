@@ -13,6 +13,7 @@ from __future__ import annotations
 import httpx
 
 from .db import get_connection
+from .models import Site
 
 
 # Fields we ask Supabase to return. Avoids pulling down columns we don't use.
@@ -80,3 +81,61 @@ def dedup_against_db(sites: list[dict], db_path) -> list[dict]:
         ).fetchall()
     seen = {row["url"] for row in rows}
     return [s for s in sites if s["url"] not in seen]
+
+
+def insert_new_sites(sites: list[dict], db_path) -> list[Site]:
+    """Insert new sites into the `sites` table. Returns the inserted Site rows.
+
+    Uses `INSERT OR IGNORE` so duplicate URLs in the candidate list are
+    silently dropped (the schema's UNIQUE constraint on `url` enforces this).
+    """
+    if not sites:
+        return []
+    with get_connection(db_path) as conn:
+        for s in sites:
+            conn.execute(
+                "INSERT OR IGNORE INTO sites (url, title, description, source, status) "
+                "VALUES (?, ?, ?, 'stumbleupon.cc', 'fresh')",
+                (s["url"], s.get("title"), s.get("description")),
+            )
+        # Re-read to get the actual inserted rows (with IDs)
+        urls = [s["url"] for s in sites]
+        placeholders = ",".join("?" * len(urls))
+        rows = conn.execute(
+            f"SELECT * FROM sites WHERE url IN ({placeholders})",
+            urls,
+        ).fetchall()
+
+    return [
+        Site(
+            id=row["id"],
+            url=row["url"],
+            title=row["title"],
+            description=row["description"],
+            source=row["source"] or "stumbleupon.cc",
+            discovered_at=row["discovered_at"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+
+
+async def scrape(db_path, settings) -> list[Site]:
+    """Top-level: fetch from API, filter, dedup, insert. Returns new Site rows.
+
+    On any failure during fetch (network down, 5xx, bad JSON), returns an
+    empty list and logs. The pipeline doesn't crash; we just don't get new
+    sites today.
+    """
+    try:
+        raw_sites = await fetch_sites_from_api(
+            api_url=settings.stumbleupon_api_url,
+            api_key=settings.stumbleupon_api_key,
+        )
+    except Exception as exc:  # network, HTTP, JSON decode, anything
+        print(f"scraper: fetch failed: {exc!r}", flush=True)
+        return []
+
+    filtered = filter_sites(raw_sites, ad_block_keywords=settings.ad_block_keywords)
+    fresh = dedup_against_db(filtered, db_path)
+    return insert_new_sites(fresh, db_path)

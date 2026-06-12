@@ -8,7 +8,21 @@ import sys
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    print("run: not yet implemented (scaffold plan)", file=sys.stderr)
+    """One pipeline pass. For now this is just the scrape stage."""
+    import asyncio
+    from pathlib import Path
+
+    from .config import load_settings
+    from .db import init_db
+    from .scraper import scrape
+
+    db_path = Path("data/stumbleupon.db")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    init_db(db_path)
+
+    settings = load_settings()
+    new_sites = asyncio.run(scrape(db_path=db_path, settings=settings))
+    print(f"scrape: {len(new_sites)} new sites queued for review", file=sys.stderr)
     return 0
 
 

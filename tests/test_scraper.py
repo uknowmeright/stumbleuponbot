@@ -179,3 +179,103 @@ def test_dedup_returns_empty_when_all_already_seen(tmp_path: Path) -> None:
         {"url": "https://b.com", "title": "B", "description": ""},
     ]
     assert dedup_against_db(candidates, db_path) == []
+
+
+from stumbleupon.models import Site
+from stumbleupon.scraper import insert_new_sites
+
+
+def test_insert_new_sites_returns_site_rows(tmp_path: Path) -> None:
+    from stumbleupon.db import init_db
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    candidates = [
+        {"url": "https://a.com", "title": "A", "description": "Desc A", "category": "fun"},
+        {"url": "https://b.com", "title": "B", "description": None, "category": None},
+    ]
+    rows = insert_new_sites(candidates, db_path)
+
+    assert len(rows) == 2
+    assert all(isinstance(r, Site) for r in rows)
+    assert {r.url for r in rows} == {"https://a.com", "https://b.com"}
+    assert all(r.status == "fresh" for r in rows)
+    assert all(r.source == "stumbleupon.cc" for r in rows)
+
+
+def test_insert_new_sites_uses_url_unique_constraint(tmp_path: Path) -> None:
+    """If the same URL is inserted twice in one call, the second is silently dropped."""
+    from stumbleupon.db import init_db
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    candidates = [
+        {"url": "https://dup.com", "title": "First", "description": ""},
+        {"url": "https://dup.com", "title": "Second", "description": ""},
+    ]
+    rows = insert_new_sites(candidates, db_path)
+    assert len(rows) == 1
+    assert rows[0].title == "First"  # first-write wins
+
+
+def test_insert_new_sites_persists_to_db(tmp_path: Path) -> None:
+    from stumbleupon.db import init_db
+    from stumbleupon.db import get_connection
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    candidates = [{"url": "https://x.com", "title": "X", "description": "Hello"}]
+    insert_new_sites(candidates, db_path)
+
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT url, title, status FROM sites").fetchone()
+    assert row["url"] == "https://x.com"
+    assert row["title"] == "X"
+    assert row["status"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_scrape_orchestrator_wires_fetch_filter_dedup_insert(tmp_path: Path) -> None:
+    """End-to-end with mocked HTTP. Verifies the full pipeline runs in order."""
+    from unittest.mock import patch, AsyncMock
+
+    from stumbleupon.config import Settings
+    from stumbleupon.db import init_db
+    from stumbleupon.scraper import scrape
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    # Pre-insert one site so dedup has something to drop.
+    _insert_site(db_path, "https://already-seen.com")
+
+    api_response = [
+        {"id": "1", "url": "https://already-seen.com", "title": "X", "description": "x"},
+        {"id": "2", "url": "https://fresh.com", "title": "Fresh Site", "description": "A new one"},
+        {"id": "3", "url": "https://nsfw.com", "title": "NSFW junk", "description": "blocked"},
+    ]
+
+    mock_response = AsyncMock()
+    mock_response.json = lambda: api_response
+    mock_response.raise_for_status = lambda: None
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    settings = Settings(
+        anthropic_api_key="x", buffer_api_key="y",
+        r2_access_key_id="a", r2_secret_access_key="b",
+        r2_bucket_name="c", r2_public_url_base="d",
+        stumbleupon_api_key="test-key",
+        ad_block_keywords=["nsfw"],
+    )
+
+    with patch("stumbleupon.scraper.httpx.AsyncClient", return_value=mock_client):
+        new_sites = await scrape(db_path=db_path, settings=settings)
+
+    # Only "fresh.com" survives: not in DB, not blocked
+    assert len(new_sites) == 1
+    assert new_sites[0].url == "https://fresh.com"
+    assert new_sites[0].status == "fresh"
