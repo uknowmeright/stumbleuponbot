@@ -147,3 +147,34 @@ def record_posting_queued(db_path: Path, clip_id: int, scheduled_for: datetime) 
             "VALUES (?, 'tiktok', 'queued', ?)",
             (clip_id, scheduled_for.isoformat()),
         )
+
+
+# ---------------------------------------------------------------------------
+# Recorder-driven transitions
+# ---------------------------------------------------------------------------
+
+
+def mark_site_recorded(db_path: Path, site_id: int, recording_path: str = "") -> None:
+    """Mark a site as successfully recorded.
+
+    The `recording_path` arg is accepted for API stability; the sites
+    schema doesn't have a recording_path column (the clip row will own
+    that once the captioner plan lands). The orchestrator holds the
+    recording path in memory and returns it from `record_pending_sites`.
+    """
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE sites SET status='recorded', last_attempted=CURRENT_TIMESTAMP "
+            "WHERE id=?",
+            (site_id,),
+        )
+
+
+def mark_site_failed(db_path: Path, site_id: int, error: str) -> None:
+    """Mark a site as failed (recording error). The error is stored in skip_reason."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE sites SET status='failed', skip_reason=?, last_attempted=CURRENT_TIMESTAMP "
+            "WHERE id=?",
+            (error, site_id),
+        )

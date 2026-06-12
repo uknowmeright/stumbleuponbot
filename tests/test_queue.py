@@ -153,3 +153,44 @@ def test_get_approved_ready_to_post_respects_schedule(db_path: Path) -> None:
     # Per the docstring, clips with scheduled_for in the past (or unset) are returned.
     # Past comes first (COALESCE(scheduled_for, created_at) ordering); None falls back to created_at.
     assert [c.id for c in ready] == [ready_id, none_id]
+
+
+def test_mark_site_recorded_updates_status(db_path: Path) -> None:
+    site_id = _insert_site(db_path)
+    queue.mark_site_recorded(db_path, site_id, recording_path="data/recordings/1.webm")
+
+    with sqlite3_connect(db_path) as conn:
+        row = conn.execute("SELECT status FROM sites WHERE id=?", (site_id,)).fetchone()
+    assert row["status"] == "recorded"
+
+
+def test_mark_site_recorded_stamps_last_attempted(db_path: Path) -> None:
+    """Used to compute backoff / metrics later."""
+    site_id = _insert_site(db_path)
+    queue.mark_site_recorded(db_path, site_id, recording_path="x.webm")
+
+    with sqlite3_connect(db_path) as conn:
+        row = conn.execute("SELECT last_attempted FROM sites WHERE id=?", (site_id,)).fetchone()
+    assert row["last_attempted"] is not None
+
+
+def test_mark_site_failed_updates_status_and_skip_reason(db_path: Path) -> None:
+    site_id = _insert_site(db_path)
+    queue.mark_site_failed(db_path, site_id, error="browser crashed")
+
+    with sqlite3_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT status, skip_reason FROM sites WHERE id=?",
+            (site_id,),
+        ).fetchone()
+    assert row["status"] == "failed"
+    assert row["skip_reason"] == "browser crashed"
+
+
+def test_mark_site_failed_handles_long_error_messages(db_path: Path) -> None:
+    site_id = _insert_site(db_path)
+    long_error = "x" * 1000
+    queue.mark_site_failed(db_path, site_id, error=long_error)
+    with sqlite3_connect(db_path) as conn:
+        row = conn.execute("SELECT skip_reason FROM sites WHERE id=?", (site_id,)).fetchone()
+    assert row["skip_reason"] == long_error
