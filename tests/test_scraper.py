@@ -123,3 +123,59 @@ def test_filter_sites_preserves_input_order() -> None:
 
 def test_filter_sites_empty_input() -> None:
     assert filter_sites([], ad_block_keywords=["nsfw"]) == []
+
+
+from stumbleupon.db import init_db
+from stumbleupon.scraper import dedup_against_db
+
+
+def _insert_site(db_path: Path, url: str) -> None:
+    """Insert a site directly via SQL (bypasses the scraper's own insert fn)."""
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("INSERT INTO sites (url, title) VALUES (?, ?)", (url, "test"))
+        conn.commit()
+
+
+def test_dedup_drops_sites_already_in_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+    _insert_site(db_path, "https://already-seen.com")
+
+    candidates = [
+        {"url": "https://already-seen.com", "title": "X", "description": ""},
+        {"url": "https://new-one.com", "title": "Y", "description": ""},
+    ]
+    out = dedup_against_db(candidates, db_path)
+    assert [s["url"] for s in out] == ["https://new-one.com"]
+
+
+def test_dedup_keeps_all_when_db_is_empty(tmp_path: Path) -> None:
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    candidates = [
+        {"url": "https://a.com", "title": "A", "description": ""},
+        {"url": "https://b.com", "title": "B", "description": ""},
+    ]
+    out = dedup_against_db(candidates, db_path)
+    assert len(out) == 2
+
+
+def test_dedup_handles_empty_input(tmp_path: Path) -> None:
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+    assert dedup_against_db([], db_path) == []
+
+
+def test_dedup_returns_empty_when_all_already_seen(tmp_path: Path) -> None:
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+    _insert_site(db_path, "https://a.com")
+    _insert_site(db_path, "https://b.com")
+
+    candidates = [
+        {"url": "https://a.com", "title": "A", "description": ""},
+        {"url": "https://b.com", "title": "B", "description": ""},
+    ]
+    assert dedup_against_db(candidates, db_path) == []

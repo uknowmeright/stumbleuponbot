@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import httpx
 
+from .db import get_connection
+
 
 # Fields we ask Supabase to return. Avoids pulling down columns we don't use.
 _SUPABASE_SELECT = "id,url,title,description,category,og_image,like_count,dislike_count,embeddable"
@@ -59,3 +61,22 @@ def filter_sites(sites: list[dict], ad_block_keywords: list[str]) -> list[dict]:
             continue
         out.append(site)
     return out
+
+
+def dedup_against_db(sites: list[dict], db_path) -> list[dict]:
+    """Drop sites whose URL is already in the local `sites` table.
+
+    The DB layer enforces URL uniqueness (schema constraint), so this
+    is a query, not a list-comprehension against an in-memory cache.
+    """
+    if not sites:
+        return []
+    candidate_urls = [s["url"] for s in sites]
+    placeholders = ",".join("?" * len(candidate_urls))
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT url FROM sites WHERE url IN ({placeholders})",
+            candidate_urls,
+        ).fetchall()
+    seen = {row["url"] for row in rows}
+    return [s for s in sites if s["url"] not in seen]
