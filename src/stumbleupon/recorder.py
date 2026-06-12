@@ -8,6 +8,9 @@ manual smoke command — Playwright is I/O-heavy and slow to spin up.
 from __future__ import annotations
 
 import random
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
 
 
 def generate_mouse_path(
@@ -67,3 +70,82 @@ def generate_scroll_events(
         events.append((time_offset, delta))
     events.sort(key=lambda e: e[0])
     return events
+
+
+def record_site(
+    site_url: str,
+    output_path: Path,
+    duration_sec: float = 30.0,
+    seed: int | None = None,
+) -> None:
+    """Open a browser, navigate to the site, simulate mouse + scroll activity,
+    and write the recording to `output_path` as a webm file.
+
+    Uses Playwright's sync API with `record_video_dir`. The browser tab
+    audio is muted so the eventual TikTok sound is the only audio.
+
+    This function will crash loudly if Playwright's browser binaries
+    aren't installed (run `playwright install chromium` once).
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Playwright writes the recording to this temp dir with a random name;
+    # we move it to the final path on success.
+    tmp_dir = output_path.parent / f".tmp_record_{output_path.stem}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    viewport = (1080, 1920)
+    mouse_path = generate_mouse_path(duration_sec, viewport, seed=seed)
+    scroll_events = generate_scroll_events(duration_sec, viewport[1], seed=seed)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(
+                viewport={"width": viewport[0], "height": viewport[1]},
+                record_video_dir=str(tmp_dir),
+                record_video_size={"width": viewport[0], "height": viewport[1]},
+            )
+            page = context.new_page()
+            # Mute the tab so the site's audio isn't captured
+            page.evaluate("() => { document.querySelectorAll('audio,video').forEach(el => el.muted = true); }")
+            page.goto(site_url, wait_until="domcontentloaded", timeout=10000)
+
+            # Replay the mouse path and scroll events on a timeline
+            start_time = page.evaluate("() => performance.now()") / 1000.0
+            for x, y, t in mouse_path:
+                # Sleep until the scheduled time
+                now = (page.evaluate("() => performance.now()") / 1000.0) - start_time
+                if t > now:
+                    page.wait_for_timeout(int((t - now) * 1000))
+                page.mouse.move(x, y)
+
+            for time_offset, delta_y in scroll_events:
+                now = (page.evaluate("() => performance.now()") / 1000.0) - start_time
+                if time_offset > now:
+                    page.wait_for_timeout(int((time_offset - now) * 1000))
+                page.mouse.wheel(0, delta_y)
+
+            # Ensure the full duration has elapsed
+            now = (page.evaluate("() => performance.now()") / 1000.0) - start_time
+            if duration_sec - now > 0:
+                page.wait_for_timeout(int((duration_sec - now) * 1000))
+
+            page.close()
+            context.close()
+        finally:
+            browser.close()
+
+    # Playwright writes the video to tmp_dir with a UUID name. Find and move it.
+    videos = list(tmp_dir.glob("*.webm"))
+    if not videos:
+        raise RuntimeError(f"Playwright did not produce a video in {tmp_dir}")
+    if len(videos) > 1:
+        # Unexpected but not fatal — pick the first
+        pass
+    videos[0].rename(output_path)
+    # Clean up tmp dir if empty
+    try:
+        tmp_dir.rmdir()
+    except OSError:
+        pass
