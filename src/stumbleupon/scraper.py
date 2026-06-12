@@ -1,7 +1,8 @@
 """Scraper for stumbleupon.cc's public Supabase REST API.
 
-The site is a JS-rendered single-site iframe. The actual data source is
-a public Supabase endpoint that returns live sites as JSON.
+The site is a JavaScript single-page application that loads one site at a
+time into an iframe. The actual data source is a public Supabase endpoint
+that returns live sites as JSON.
 
 The pipeline is: fetch → filter → dedup → insert. All pure-logic
 functions are unit-tested; the HTTP fetch is exercised with mocked
