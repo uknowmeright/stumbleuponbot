@@ -37,3 +37,25 @@ async def fetch_sites_from_api(api_url: str, api_key: str) -> list[dict]:
         response = await client.get(api_url, headers=headers, params=params)
         response.raise_for_status()
         return response.json()
+
+
+def filter_sites(sites: list[dict], ad_block_keywords: list[str]) -> list[dict]:
+    """Drop sites whose url, title, or description contains any blocked keyword.
+
+    Case-insensitive. Null/missing title or description are treated as empty
+    (they can't match, so the site passes through).
+    """
+    if not ad_block_keywords:
+        return list(sites)
+
+    keywords_lower = [k.lower() for k in ad_block_keywords]
+    out: list[dict] = []
+    for site in sites:
+        url = (site.get("url") or "").lower()
+        title = (site.get("title") or "").lower()
+        description = (site.get("description") or "").lower()
+        haystack = f"{url} {title} {description}"
+        if any(kw in haystack for kw in keywords_lower):
+            continue
+        out.append(site)
+    return out
