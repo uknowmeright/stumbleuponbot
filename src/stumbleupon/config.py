@@ -26,6 +26,8 @@ class Settings:
     posts_per_day: int = 2
     proxy_url: str | None = None
     openai_api_key: str | None = None
+    stumbleupon_api_url: str = "https://boembmgwjjdqgkcokapx.supabase.co/rest/v1/sites"
+    stumbleupon_api_key: str = ""
 
 
 def _split_csv(value: str | None) -> list[str]:
@@ -53,4 +55,6 @@ def load_settings(env_file: Path | None = None) -> Settings:
         posts_per_day=int(sources.get("POSTS_PER_DAY", "2")),
         proxy_url=sources.get("PROXY_URL") or None,
         openai_api_key=sources.get("OPENAI_API_KEY") or None,
+        stumbleupon_api_url=sources.get("STUMBLEUPON_API_URL", "") or "https://boembmgwjjdqgkcokapx.supabase.co/rest/v1/sites",
+        stumbleupon_api_key=sources.get("STUMBLEUPON_API_KEY", "") or "",
     )

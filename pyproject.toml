@@ -9,12 +9,14 @@ description = "Local TikTok pipeline for the weird web"
 requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
 ]
 
 [project.scripts]
