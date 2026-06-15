@@ -8,11 +8,12 @@ import sys
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """One pipeline pass: scrape, record, then caption."""
+    """One pipeline pass: scrape, record, caption, then compose."""
     import asyncio
     from pathlib import Path
 
     from .captioner import caption_pending_recordings
+    from .composer import compose_pending_clips
     from .config import load_settings
     from .db import init_db
     from .recorder import record_pending_sites
@@ -42,6 +43,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         limit=5,
     ))
     print(f"captioner: {len(clips)} clips queued for review", file=sys.stderr)
+
+    finals_dir = db_path.parent / "final"
+    finals_dir.mkdir(parents=True, exist_ok=True)
+    composed = compose_pending_clips(
+        db_path=db_path,
+        finals_dir=finals_dir,
+        limit=5,
+        duration_sec=30.0,
+    )
+    print(f"composer: {len(composed)} clips composed to {finals_dir}", file=sys.stderr)
     return 0
 
 

@@ -158,3 +158,113 @@ def test_compose_clip_creates_output_dir_if_missing(tmp_path: Path) -> None:
         )
 
     assert out.parent.exists()
+
+
+# ---------------------------------------------------------------------------
+# compose_pending_clips (orchestrator)
+# ---------------------------------------------------------------------------
+
+
+def test_compose_pending_clips_calls_compose_clip_per_clip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end with mocked compose_clip. Verifies each clip is processed."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import composer, queue
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        clip_id = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) "
+            "VALUES (?, 'pending', ?)",
+            (site_id, str(tmp_path / "1.webm")),
+        ).lastrowid
+        conn.commit()
+
+    finals_dir = tmp_path / "final"
+    seen_args: list[tuple] = []
+
+    def fake_compose_clip(recording_path, output_path, sound_path=None, duration_sec=30.0):
+        seen_args.append((recording_path, output_path, sound_path, duration_sec))
+        # Simulate ffmpeg writing the file
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake mp4")
+
+    monkeypatch.setattr(composer, "compose_clip", fake_compose_clip)
+
+    results = composer.compose_pending_clips(
+        db_path=db_path, finals_dir=finals_dir, limit=5,
+    )
+
+    assert len(results) == 1
+    assert results[0]["clip_id"] == clip_id
+    assert len(seen_args) == 1
+    rec, out, snd, dur = seen_args[0]
+    assert str(rec) == str(tmp_path / "1.webm")
+    assert str(out) == str(finals_dir / f"{clip_id}.mp4")
+    assert snd is None
+    assert dur == 30.0
+
+    # Verify the DB was updated
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT status, final_path FROM clips WHERE id=?", (clip_id,)
+        ).fetchone()
+    assert row["status"] == "pending"
+    assert row["final_path"] == str(finals_dir / f"{clip_id}.mp4")
+
+
+def test_compose_pending_clips_handles_per_clip_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One bad clip doesn't sink the batch."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import composer, queue
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) "
+            "VALUES (?, 'pending', ?)",
+            (site_id, str(tmp_path / "1.webm")),
+        ).lastrowid
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) "
+            "VALUES (?, 'pending', ?)",
+            (site_id, str(tmp_path / "2.webm")),
+        ).lastrowid
+        conn.commit()
+
+    finals_dir = tmp_path / "final"
+
+    def fake_compose_clip(recording_path, output_path, sound_path=None, duration_sec=30.0):
+        if "2.webm" in str(recording_path):
+            raise RuntimeError("ffmpeg crashed")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"fake mp4")
+
+    monkeypatch.setattr(composer, "compose_clip", fake_compose_clip)
+
+    results = composer.compose_pending_clips(
+        db_path=db_path, finals_dir=finals_dir, limit=5,
+    )
+
+    # 'a' succeeded; 'b' was marked failed (via mark_site_failed on the parent site)
+    assert len(results) == 1
+    assert results[0]["clip_id"] == a
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = {
+            r["url"]: (r["status"], r["skip_reason"])
+            for r in conn.execute("SELECT url, status, skip_reason FROM sites").fetchall()
+        }
+    assert rows["https://x.com"][0] == "failed"
+    assert "ffmpeg crashed" in rows["https://x.com"][1]

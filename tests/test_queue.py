@@ -288,3 +288,95 @@ def test_create_clip_returns_unique_ids(db_path: Path) -> None:
     a = queue.create_clip(db_path, site_id, "a.webm", "cap a", "a")
     b = queue.create_clip(db_path, site_id, "b.webm", "cap b", "b")
     assert a != b
+
+
+def test_get_clips_to_compose_finds_pending_with_recording_path(db_path: Path) -> None:
+    """Returns clips that have recording_path but no final_path, status=pending."""
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        # 1: pending + recording (should be picked)
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'pending', 'data/recordings/1.webm', NULL)",
+            (site_id,),
+        ).lastrowid
+        # 2: pending + recording + final (already composed, skip)
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'pending', 'data/recordings/2.webm', 'data/final/2.mp4')",
+            (site_id,),
+        ).lastrowid
+        # 3: pending, no recording (captioner hasn't run yet, skip)
+        c = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) VALUES (?, 'pending', NULL)",
+            (site_id,),
+        ).lastrowid
+        # 4: posted, has recording (skip — not pending)
+        d = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) VALUES (?, 'posted', 'data/recordings/4.webm')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    rows = queue.get_clips_to_compose(db_path)
+    ids = [r["id"] for r in rows]
+    assert ids == [a]
+
+
+def test_get_clips_to_compose_respects_limit(db_path: Path) -> None:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO clips (site_id, status, recording_path) "
+                "VALUES (?, 'pending', ?)",
+                (site_id, f"data/recordings/{i}.webm"),
+            )
+        conn.commit()
+    rows = queue.get_clips_to_compose(db_path, limit=2)
+    assert len(rows) == 2
+
+
+def test_mark_clip_composed_sets_final_path(db_path: Path) -> None:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        clip_id = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) "
+            "VALUES (?, 'pending', 'data/recordings/1.webm')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    queue.mark_clip_composed(db_path, clip_id, final_path="data/final/1.mp4")
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT status, final_path FROM clips WHERE id=?", (clip_id,)
+        ).fetchone()
+    assert row["status"] == "pending"  # still pending (awaits human review)
+    assert row["final_path"] == "data/final/1.mp4"
+
+
+def test_mark_clip_composed_stamps_last_attempted(db_path: Path) -> None:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        clip_id = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) "
+            "VALUES (?, 'pending', 'data/recordings/1.webm')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    queue.mark_clip_composed(db_path, clip_id, final_path="data/final/1.mp4")
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT last_attempted FROM clips WHERE id=?", (clip_id,)).fetchone()
+    assert row["last_attempted"] is not None

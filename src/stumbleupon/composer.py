@@ -9,7 +9,10 @@ subprocess.run; ffmpeg itself is not invoked in tests.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+
+from . import queue
 
 
 # Default ffmpeg invocation parameters
@@ -90,3 +93,58 @@ def compose_clip(
 
     cmd = build_ffmpeg_command(recording_path, output_path, sound_path, duration_sec)
     subprocess.run(cmd, check=True, capture_output=True)
+
+
+def compose_pending_clips(
+    db_path: Path,
+    finals_dir: Path,
+    limit: int = 5,
+    sound_path: Path | None = None,
+    duration_sec: float = _DEFAULT_DURATION_SEC,
+) -> list[dict]:
+    """For each clip that has a recording but no final mp4, run the composer.
+
+    Returns a list of {clip_id, final_path, recording_path} dicts for the
+    clips that were successfully composed. Per-clip failures are caught:
+    the parent site is marked 'failed' in the DB and the batch continues.
+    The orchestrator never raises.
+    """
+    finals_dir = Path(finals_dir)
+    rows = queue.get_clips_to_compose(db_path, limit=limit)
+
+    out: list[dict] = []
+    for row in rows:
+        clip_id = row["id"]
+        site_id = row["site_id"]
+        recording_path = Path(row["recording_path"])
+        output_path = resolve_output_path(finals_dir, clip_id)
+
+        try:
+            compose_clip(
+                recording_path=recording_path,
+                output_path=output_path,
+                sound_path=sound_path,
+                duration_sec=duration_sec,
+            )
+        except Exception as exc:
+            # Mark the parent site as failed; the clip row stays put for inspection
+            queue.mark_site_failed(db_path, site_id, error=f"{type(exc).__name__}: {exc}")
+            print(
+                f"composer: clip {clip_id} (site {site_id}) failed: {exc!r}",
+                file=sys.stderr, flush=True,
+            )
+            continue
+
+        queue.mark_clip_composed(db_path, clip_id, final_path=str(output_path))
+        out.append({
+            "clip_id": clip_id,
+            "site_id": site_id,
+            "recording_path": str(recording_path),
+            "final_path": str(output_path),
+        })
+        print(
+            f"composer: clip {clip_id} -> {output_path}",
+            file=sys.stderr, flush=True,
+        )
+
+    return out

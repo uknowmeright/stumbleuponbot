@@ -26,6 +26,7 @@ def _row_to_clip(row: sqlite3.Row) -> Clip:
         sound_id=row["sound_id"],
         duration_sec=row["duration_sec"],
         created_at=row["created_at"],
+        last_attempted=row["last_attempted"],
         status=row["status"],
         review_notes=row["review_notes"],
         reviewed_at=row["reviewed_at"],
@@ -236,3 +237,46 @@ def create_clip(
             (site_id, recording_path, caption, hashtags),
         )
         return cur.lastrowid or 0
+
+
+# ---------------------------------------------------------------------------
+# Composer-driven queries + transitions
+# ---------------------------------------------------------------------------
+
+
+def get_clips_to_compose(db_path: Path, limit: int | None = None) -> list[sqlite3.Row]:
+    """Return pending clips that have a recording_path but no final_path.
+
+    These are the clips the composer should process. Already-composed
+    clips (final_path set) and clips without a recording (captioner
+    hasn't run yet) are excluded.
+    """
+    sql = (
+        "SELECT * FROM clips "
+        "WHERE status='pending' "
+        "AND recording_path IS NOT NULL "
+        "AND final_path IS NULL "
+        "ORDER BY created_at ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (limit,)
+    else:
+        params = ()
+    with get_connection(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [row for row in rows]
+
+
+def mark_clip_composed(db_path: Path, clip_id: int, final_path: str) -> None:
+    """Mark a clip's final_path after the composer has produced the mp4.
+
+    The clip's status stays 'pending' — the human review gate hasn't run
+    yet. last_attempted is stamped for metrics/backoff.
+    """
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE clips SET final_path=?, last_attempted=CURRENT_TIMESTAMP "
+            "WHERE id=?",
+            (final_path, clip_id),
+        )

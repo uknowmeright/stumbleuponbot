@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sites (
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS clips (
   sound_id        INTEGER REFERENCES sounds(id),
   duration_sec    REAL,
   created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_attempted  TIMESTAMP,
   status          TEXT DEFAULT 'pending',
   review_notes    TEXT,
   reviewed_at     TIMESTAMP,

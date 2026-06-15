@@ -52,6 +52,7 @@ class Clip:
     sound_id: int | None = None
     duration_sec: float | None = None
     created_at: datetime = field(default_factory=_utcnow)
+    last_attempted: datetime | None = None
     status: str = "pending"
     review_notes: str | None = None
     reviewed_at: datetime | None = None

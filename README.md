@@ -22,6 +22,9 @@ $EDITOR .env
 
 # 4. Install Playwright's Chromium binary (one-time, downloads ~150MB)
 .venv/bin/playwright install chromium
+
+# 5. Install ffmpeg system-wide (one-time)
+brew install ffmpeg  # macOS; for Linux: apt-get install ffmpeg
 ```
 
 Python 3.11+ is required (per `pyproject.toml`). The setup above was verified on Python 3.14.5 (Homebrew).
@@ -47,6 +50,7 @@ See [docs/superpowers/specs/2026-06-10-stumbleupon-pipeline-design.md](docs/supe
 ```
 src/stumbleupon/
 ├── captioner.py # Claude API → caption + hashtags
+├── composer.py  # ffmpeg → final 1080x1920 mp4
 ├── config.py    # Settings loaded from .env
 ├── db.py        # SQLite schema + connection helpers
 ├── main.py      # CLI entry point
@@ -63,7 +67,7 @@ This plan covers the scaffold. Future plans:
 - Recorder (Playwright 30s vertical video) — done
 - Captioner (Claude + tone guide) — done
 - Sounds (TikTok trending scrape)
-- Composer (ffmpeg)
+- Composer (ffmpeg) — done
 - Reviewer (CLI)
 - Poster (Buffer + R2)
 - launchd plists
