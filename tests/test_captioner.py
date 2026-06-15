@@ -180,3 +180,104 @@ async def test_generate_caption_calls_anthropic_and_returns_payload() -> None:
     assert "save_caption" in [t["name"] for t in call_args.kwargs["tools"]]
     assert call_args.kwargs["messages"][0]["role"] == "system"
     assert SAMPLE_TONE_GUIDE in call_args.kwargs["messages"][0]["content"]
+
+
+def test_caption_pending_recordings_writes_clips_to_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """End-to-end with mocked Claude. Verifies clips are created with the right fields."""
+    import asyncio
+    from stumbleupon.db import init_db
+    from stumbleupon import captioner, queue
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        site_id = conn.execute(
+            "INSERT INTO sites (url, title, description, status) VALUES (?, ?, ?, 'recorded')",
+            ("https://a.com", "Cool Site", "A test site"),
+        ).lastrowid
+        conn.commit()
+    recordings_dir = tmp_path / "recordings"
+
+    async def fake_generate_caption(site_info, past_captions, tone_guide, settings):
+        return "A great caption about this site", ["weirdweb", "oldsite", "flash"]
+
+    monkeypatch.setattr(captioner, "generate_caption", fake_generate_caption)
+
+    from stumbleupon.config import Settings
+    settings = Settings(
+        anthropic_api_key="x", buffer_api_key="y",
+        r2_access_key_id="a", r2_secret_access_key="b",
+        r2_bucket_name="c", r2_public_url_base="d",
+    )
+
+    results = asyncio.run(captioner.caption_pending_recordings(
+        db_path=db_path, settings=settings, recordings_dir=recordings_dir,
+    ))
+
+    assert len(results) == 1
+    clip_id, (caption, hashtags) = list(results.items())[0]
+    assert caption == "A great caption about this site"
+    assert hashtags == ["weirdweb", "oldsite", "flash"]
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT site_id, recording_path, caption, hashtags, status FROM clips WHERE id=?",
+            (clip_id,),
+        ).fetchone()
+    assert row["site_id"] == site_id
+    assert row["recording_path"] == str(recordings_dir / f"{site_id}.webm")
+    assert row["status"] == "pending"
+    assert row["caption"] == "A great caption about this site"
+    assert row["hashtags"] == "weirdweb,oldsite,flash"
+
+
+def test_caption_pending_recordings_handles_per_site_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One bad site doesn't sink the batch."""
+    import asyncio
+    from stumbleupon.db import init_db
+    from stumbleupon import captioner, queue
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        a = conn.execute(
+            "INSERT INTO sites (url, status) VALUES ('https://a.com', 'recorded')"
+        ).lastrowid
+        b = conn.execute(
+            "INSERT INTO sites (url, status) VALUES ('https://b.com', 'recorded')"
+        ).lastrowid
+        conn.commit()
+    recordings_dir = tmp_path / "recordings"
+
+    async def fake_generate_caption(site_info, past_captions, tone_guide, settings):
+        if "b.com" in site_info["url"]:
+            raise RuntimeError("claude api 500")
+        return f"caption for {site_info['url']}", ["weirdweb"]
+
+    monkeypatch.setattr(captioner, "generate_caption", fake_generate_caption)
+
+    from stumbleupon.config import Settings
+    settings = Settings(
+        anthropic_api_key="x", buffer_api_key="y",
+        r2_access_key_id="a", r2_secret_access_key="b",
+        r2_bucket_name="c", r2_public_url_base="d",
+    )
+
+    results = asyncio.run(captioner.caption_pending_recordings(
+        db_path=db_path, settings=settings, recordings_dir=recordings_dir,
+    ))
+
+    assert len(results) == 1
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = {
+            r["url"]: (r["status"], r["skip_reason"])
+            for r in conn.execute("SELECT url, status, skip_reason FROM sites").fetchall()
+        }
+    assert rows["https://a.com"][0] == "recorded"
+    assert rows["https://b.com"][0] == "failed"
+    assert "claude api 500" in rows["https://b.com"][1]

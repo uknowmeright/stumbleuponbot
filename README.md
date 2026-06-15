@@ -46,6 +46,7 @@ See [docs/superpowers/specs/2026-06-10-stumbleupon-pipeline-design.md](docs/supe
 
 ```
 src/stumbleupon/
+├── captioner.py # Claude API → caption + hashtags
 ├── config.py    # Settings loaded from .env
 ├── db.py        # SQLite schema + connection helpers
 ├── main.py      # CLI entry point
@@ -60,7 +61,7 @@ src/stumbleupon/
 This plan covers the scaffold. Future plans:
 - Scraper (stumbleupon.cc crawl) — done (now uses Supabase API)
 - Recorder (Playwright 30s vertical video) — done
-- Captioner (Claude + tone guide)
+- Captioner (Claude + tone guide) — done
 - Sounds (TikTok trending scrape)
 - Composer (ffmpeg)
 - Reviewer (CLI)

@@ -8,10 +8,11 @@ import sys
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """One pipeline pass: scrape fresh sites, then record up to N of them."""
+    """One pipeline pass: scrape, record, then caption."""
     import asyncio
     from pathlib import Path
 
+    from .captioner import caption_pending_recordings
     from .config import load_settings
     from .db import init_db
     from .recorder import record_pending_sites
@@ -33,6 +34,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         limit=3,
     )
     print(f"recorder: {len(recorded)} sites recorded to {recordings_dir}", file=sys.stderr)
+
+    clips = asyncio.run(caption_pending_recordings(
+        db_path=db_path,
+        settings=settings,
+        recordings_dir=recordings_dir,
+        limit=5,
+    ))
+    print(f"captioner: {len(clips)} clips queued for review", file=sys.stderr)
     return 0
 
 

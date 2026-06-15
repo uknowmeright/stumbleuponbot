@@ -194,3 +194,97 @@ def test_mark_site_failed_handles_long_error_messages(db_path: Path) -> None:
     with sqlite3_connect(db_path) as conn:
         row = conn.execute("SELECT skip_reason FROM sites WHERE id=?", (site_id,)).fetchone()
     assert row["skip_reason"] == long_error
+
+
+def test_get_posted_caption_examples_returns_published_captions(db_path: Path) -> None:
+    """Returns the `caption` text of recently `posted` clips, newest first."""
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        for i, status in enumerate(["posted", "posted", "pending", "posted", "failed"]):
+            conn.execute(
+                "INSERT INTO clips (site_id, status, caption, hashtags) VALUES (?, ?, ?, ?)",
+                (site_id, status, f"caption-{i}", "a,b"),
+            )
+        conn.commit()
+
+    examples = queue.get_posted_caption_examples(db_path, limit=5)
+    # Only the 3 'posted' captions, newest first
+    assert examples == ["caption-3", "caption-1", "caption-0"]
+
+
+def test_get_posted_caption_examples_respects_limit(db_path: Path) -> None:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO clips (site_id, status, caption) VALUES (?, 'posted', ?)",
+                (site_id, f"cap-{i}"),
+            )
+        conn.commit()
+    assert len(queue.get_posted_caption_examples(db_path, limit=2)) == 2
+
+
+def test_get_recorded_sites_without_clips_picks_recorded_sites(db_path: Path) -> None:
+    """Returns (id, url) for sites with status='recorded' that have no clip row."""
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("INSERT INTO sites (url, status) VALUES ('https://a.com', 'recorded')")
+        conn.execute("INSERT INTO sites (url, status) VALUES ('https://b.com', 'fresh')")
+        conn.execute("INSERT INTO sites (url, status) VALUES ('https://c.com', 'failed')")
+        site_with_clip = conn.execute(
+            "INSERT INTO sites (url, status) VALUES ('https://d.com', 'recorded')"
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO clips (site_id, status) VALUES (?, 'pending')",
+            (site_with_clip,),
+        )
+        conn.commit()
+
+    rows = queue.get_recorded_sites_without_clips(db_path)
+    urls = [url for _id, url in rows]
+    assert urls == ["https://a.com"]
+
+
+def test_create_clip_inserts_a_new_clip_row(db_path: Path) -> None:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        conn.commit()
+
+    clip_id = queue.create_clip(
+        db_path,
+        site_id=site_id,
+        recording_path="data/recordings/1.webm",
+        caption="A test caption",
+        hashtags="weirdweb,oldsite,flash",
+    )
+    assert clip_id > 0
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT site_id, recording_path, caption, hashtags, status FROM clips WHERE id=?",
+            (clip_id,),
+        ).fetchone()
+    assert row["site_id"] == site_id
+    assert row["recording_path"] == "data/recordings/1.webm"
+    assert row["caption"] == "A test caption"
+    assert row["hashtags"] == "weirdweb,oldsite,flash"
+    assert row["status"] == "pending"
+
+
+def test_create_clip_returns_unique_ids(db_path: Path) -> None:
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        conn.commit()
+    a = queue.create_clip(db_path, site_id, "a.webm", "cap a", "a")
+    b = queue.create_clip(db_path, site_id, "b.webm", "cap b", "b")
+    assert a != b

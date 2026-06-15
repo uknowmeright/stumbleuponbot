@@ -8,9 +8,13 @@ tested with mocked HTTP and a real DB.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import anthropic
 
+from . import queue
 from .config import Settings
+from .db import get_connection
 
 
 # Default model — can be overridden by Settings later
@@ -128,3 +132,73 @@ async def generate_caption(
         )
     payload = parse_caption_response(response.content)
     return payload["caption"], payload["hashtags"]
+
+
+def _load_tone_guide() -> str:
+    """Read the channel's tone guide from the repo."""
+    # docs/tone-guide.md is at the repo root, two levels up from this file
+    tone_path = Path(__file__).resolve().parent.parent.parent / "docs" / "tone-guide.md"
+    return tone_path.read_text(encoding="utf-8")
+
+
+async def caption_pending_recordings(
+    db_path: Path,
+    settings: Settings,
+    recordings_dir: Path,
+    limit: int = 5,
+) -> dict[int, tuple[str, list[str]]]:
+    """For each recorded site that doesn't yet have a clip, generate a caption
+    and create the clip row.
+
+    Returns {clip_id: (caption, hashtags)} for the clips that were created.
+    Per-site failures are caught: the site is marked 'failed' in the DB and
+    the batch continues. The orchestrator never raises.
+    """
+    recordings_dir = Path(recordings_dir)
+    tone_guide = _load_tone_guide()
+
+    sites = queue.get_recorded_sites_without_clips(db_path)
+    sites = sites[:limit]
+    past_captions = queue.get_posted_caption_examples(db_path, limit=5)
+
+    out: dict[int, tuple[str, list[str]]] = {}
+    for site_id, url in sites:
+        site_info = {"url": url}
+        # Look up title/description from the sites row (cheap)
+        with get_connection(db_path) as conn:
+            row = conn.execute(
+                "SELECT title, description FROM sites WHERE id=?",
+                (site_id,),
+            ).fetchone()
+        site_info["title"] = row["title"] or ""
+        site_info["description"] = row["description"] or ""
+
+        recording_path = str(recordings_dir / f"{site_id}.webm")
+        try:
+            caption, hashtags = await generate_caption(
+                site_info=site_info,
+                past_captions=past_captions,
+                tone_guide=tone_guide,
+                settings=settings,
+            )
+        except Exception as exc:
+            queue.mark_site_failed(db_path, site_id, error=f"{type(exc).__name__}: {exc}")
+            print(f"captioner: site {site_id} ({url}) failed: {exc!r}", flush=True)
+            continue
+
+        # Validate (non-fatal — just log warnings)
+        warnings = validate_caption(caption, hashtags)
+        for w in warnings:
+            print(f"captioner: site {site_id} warning: {w}", flush=True)
+
+        clip_id = queue.create_clip(
+            db_path=db_path,
+            site_id=site_id,
+            recording_path=recording_path,
+            caption=caption,
+            hashtags=",".join(hashtags),
+        )
+        out[clip_id] = (caption, hashtags)
+        print(f"captioner: site {site_id} -> clip {clip_id} (caption: {len(caption)} chars, {len(hashtags)} hashtags)", flush=True)
+
+    return out

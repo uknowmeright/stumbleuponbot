@@ -178,3 +178,61 @@ def mark_site_failed(db_path: Path, site_id: int, error: str) -> None:
             "WHERE id=?",
             (error, site_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Captioner-driven queries + transitions
+# ---------------------------------------------------------------------------
+
+
+def get_posted_caption_examples(db_path: Path, limit: int = 5) -> list[str]:
+    """Return the captions of up to `limit` recently-posted clips, newest first.
+
+    Used by the captioner to seed its prompt with examples of what
+    on-brand copy looks like. The captions come from clips whose status
+    reached 'posted' (i.e., real published content), not just approved.
+    """
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT caption FROM clips WHERE status='posted' "
+            "AND caption IS NOT NULL AND caption != '' "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [row["caption"] for row in rows]
+
+
+def get_recorded_sites_without_clips(db_path: Path) -> list[tuple[int, str]]:
+    """Return [(id, url), ...] for sites with status='recorded' that don't yet
+    have a clip row. The recording_path is NOT included here — the orchestrator
+    computes it by convention as `data/recordings/<site_id>.webm`.
+    """
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT s.id, s.url FROM sites s "
+            "WHERE s.status='recorded' "
+            "AND NOT EXISTS (SELECT 1 FROM clips c WHERE c.site_id = s.id) "
+            "ORDER BY s.discovered_at ASC"
+        ).fetchall()
+    return [(row["id"], row["url"]) for row in rows]
+
+
+def create_clip(
+    db_path: Path,
+    site_id: int,
+    recording_path: str,
+    caption: str,
+    hashtags: str,
+) -> int:
+    """Insert a new clip row with status='pending' (awaiting human review).
+
+    `hashtags` is stored as a comma-separated string (the schema's
+    convention). The clip_id is returned so the caller can map back.
+    """
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO clips (site_id, recording_path, caption, hashtags, status) "
+            "VALUES (?, ?, ?, ?, 'pending')",
+            (site_id, recording_path, caption, hashtags),
+        )
+        return cur.lastrowid or 0
