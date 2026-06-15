@@ -8,12 +8,13 @@ import sys
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """One pipeline pass. For now this is just the scrape stage."""
+    """One pipeline pass: scrape fresh sites, then record up to N of them."""
     import asyncio
     from pathlib import Path
 
     from .config import load_settings
     from .db import init_db
+    from .recorder import record_pending_sites
     from .scraper import scrape
 
     db_path = Path("data/stumbleupon.db")
@@ -23,6 +24,15 @@ def cmd_run(args: argparse.Namespace) -> int:
     settings = load_settings()
     new_sites = asyncio.run(scrape(db_path=db_path, settings=settings))
     print(f"scrape: {len(new_sites)} new sites queued for review", file=sys.stderr)
+
+    recordings_dir = db_path.parent / "recordings"
+    recorded = record_pending_sites(
+        db_path=db_path,
+        recordings_dir=recordings_dir,
+        duration_sec=30.0,
+        limit=3,
+    )
+    print(f"recorder: {len(recorded)} sites recorded to {recordings_dir}", file=sys.stderr)
     return 0
 
 

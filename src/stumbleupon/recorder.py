@@ -12,6 +12,9 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from . import queue
+from .db import get_connection
+
 
 def generate_mouse_path(
     duration_sec: float,
@@ -149,3 +152,53 @@ def record_site(
         tmp_dir.rmdir()
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator: drive the recorder across fresh sites
+# ---------------------------------------------------------------------------
+
+
+def _fetch_fresh_sites(db_path: Path, limit: int) -> list[tuple[int, str]]:
+    """Return [(site_id, url), ...] for fresh sites, oldest first."""
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, url FROM sites WHERE status='fresh' "
+            "ORDER BY discovered_at ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [(row["id"], row["url"]) for row in rows]
+
+
+def record_pending_sites(
+    db_path: Path,
+    recordings_dir: Path,
+    duration_sec: float = 30.0,
+    limit: int = 3,
+) -> list[tuple[int, str, Path]]:
+    """Record up to `limit` fresh sites. Returns [(site_id, url, recording_path), ...]
+    for sites that were successfully recorded.
+
+    Per-site failures are caught: the site is marked `failed` in the DB and
+    the batch continues. The orchestrator never raises.
+    """
+    recordings_dir = Path(recordings_dir)
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+
+    fresh = _fetch_fresh_sites(db_path, limit)
+    out: list[tuple[int, str, Path]] = []
+    for site_id, url in fresh:
+        output_path = recordings_dir / f"{site_id}.webm"
+        try:
+            record_site(
+                site_url=url,
+                output_path=output_path,
+                duration_sec=duration_sec,
+            )
+        except Exception as exc:
+            queue.mark_site_failed(db_path, site_id, error=f"{type(exc).__name__}: {exc}")
+            print(f"recorder: site {site_id} ({url}) failed: {exc!r}", flush=True)
+            continue
+        queue.mark_site_recorded(db_path, site_id, recording_path=str(output_path))
+        out.append((site_id, url, output_path))
+    return out

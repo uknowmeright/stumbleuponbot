@@ -19,6 +19,9 @@ $EDITOR .env
 
 # 3. Smoke test: settings load
 .venv/bin/python -m stumbleupon.main show-config
+
+# 4. Install Playwright's Chromium binary (one-time, downloads ~150MB)
+.venv/bin/playwright install chromium
 ```
 
 Python 3.11+ is required (per `pyproject.toml`). The setup above was verified on Python 3.14.5 (Homebrew).
@@ -48,6 +51,7 @@ src/stumbleupon/
 ├── main.py      # CLI entry point
 ├── models.py    # Site, Clip, Sound, Posting dataclasses
 ├── queue.py     # The only module that mutates clips.status
+├── recorder.py  # 30s vertical video clips via Playwright
 └── scraper.py   # stumbleupon.cc → fresh sites (Supabase API)
 ```
 
@@ -55,7 +59,7 @@ src/stumbleupon/
 
 This plan covers the scaffold. Future plans:
 - Scraper (stumbleupon.cc crawl) — done (now uses Supabase API)
-- Recorder (Playwright 30s vertical video)
+- Recorder (Playwright 30s vertical video) — done
 - Captioner (Claude + tone guide)
 - Sounds (TikTok trending scrape)
 - Composer (ffmpeg)
