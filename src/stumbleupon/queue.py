@@ -342,3 +342,39 @@ def set_clip_r2_url(db_path: Path, clip_id: int, r2_url: str) -> None:
             "UPDATE clips SET r2_public_url=?, last_attempted=CURRENT_TIMESTAMP WHERE id=?",
             (r2_url, clip_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Sounds-driven queries + transitions
+# ---------------------------------------------------------------------------
+
+
+def upsert_sound(
+    db_path: Path,
+    tiktok_sound_id: str,
+    title: str,
+    artist: str,
+    views: int,
+    audio_path: str | None = None,
+) -> int:
+    """Insert a sound row, or update it if tiktok_sound_id already exists.
+
+    On conflict: refreshes title, artist, trending_score (from views),
+    fetched_at; COALESCE preserves an existing audio_path if the new
+    one is None. Returns the row id.
+    """
+    with get_connection(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, title, artist, trending_score, audio_path) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(tiktok_sound_id) DO UPDATE SET "
+            "  title=excluded.title, "
+            "  artist=excluded.artist, "
+            "  trending_score=excluded.trending_score, "
+            "  audio_path=COALESCE(excluded.audio_path, sounds.audio_path), "
+            "  fetched_at=CURRENT_TIMESTAMP "
+            "RETURNING id",
+            (tiktok_sound_id, title, artist, float(views), audio_path),
+        )
+        row = cur.fetchone()
+        return row[0] if row else 0

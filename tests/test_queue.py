@@ -471,3 +471,23 @@ def test_get_clips_to_review_finds_pending_with_final_path(db_path: Path) -> Non
     rows = queue.get_clips_to_review(db_path)
     ids = [r.id for r in rows]
     assert ids == [a]
+
+
+def test_upsert_sound_inserts_and_updates(db_path: Path) -> None:
+    """Insert a sound, then upsert again with a new score — should update, not duplicate."""
+    id1 = queue.upsert_sound(
+        db_path, tiktok_sound_id="x1", title="Original", artist="A",
+        views=100, audio_path="/tmp/x1.mp3",
+    )
+    id2 = queue.upsert_sound(
+        db_path, tiktok_sound_id="x1", title="Updated", artist="A",
+        views=200, audio_path="/tmp/x1.mp3",
+    )
+    assert id1 == id2  # same row, updated
+
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT title, trending_score FROM sounds WHERE id=?", (id1,)).fetchone()
+    assert row["title"] == "Updated"
+    assert row["trending_score"] == 200.0
