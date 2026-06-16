@@ -55,6 +55,7 @@ src/stumbleupon/
 ├── db.py        # SQLite schema + connection helpers
 ├── main.py      # CLI entry point
 ├── models.py    # Site, Clip, Sound, Posting dataclasses
+├── poster.py    # R2 upload + Buffer post
 ├── queue.py     # The only module that mutates clips.status
 ├── recorder.py  # 30s vertical video clips via Playwright
 ├── reviewer.py  # human-in-the-loop CLI for clip approval
@@ -70,5 +71,5 @@ This plan covers the scaffold. Future plans:
 - Sounds (TikTok trending scrape)
 - Composer (ffmpeg) — done
 - Reviewer (CLI) — done
-- Poster (Buffer + R2)
+- Poster (Buffer + R2) — done
 - launchd plists

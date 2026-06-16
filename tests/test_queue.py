@@ -60,6 +60,60 @@ def sqlite3_connect(db_path: Path):
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Poster-driven queries + transitions
+# ---------------------------------------------------------------------------
+
+
+def test_get_approved_clips_finds_approved_regardless_of_r2(db_path: Path) -> None:
+    """Returns approved clips regardless of whether r2_public_url is set.
+
+    The poster handles R2 upload itself, so it needs to see approved
+    clips before the R2 URL is set.
+    """
+    with sqlite3_connect(db_path) as conn:
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        # 1: approved, no r2 (should be picked — poster will upload)
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, r2_public_url) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', NULL)",
+            (site_id,),
+        ).lastrowid
+        # 2: approved, has r2 (should also be picked — poster may retry)
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, r2_public_url) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', 'https://r2/2.mp4')",
+            (site_id,),
+        ).lastrowid
+        # 3: pending (skip — not approved)
+        c = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'pending', 'r.webm', 'f.mp4')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    rows = queue.get_approved_clips(db_path)
+    ids = [r.id for r in rows]
+    assert ids == [a, b]
+
+
+def test_set_clip_r2_url_sets_r2_public_url(db_path: Path) -> None:
+    with sqlite3_connect(db_path) as conn:
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        clip_id = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    queue.set_clip_r2_url(db_path, clip_id, r2_url="https://media.example.com/42.mp4")
+    with sqlite3_connect(db_path) as conn:
+        row = conn.execute("SELECT r2_public_url FROM clips WHERE id=?", (clip_id,)).fetchone()
+    assert row["r2_public_url"] == "https://media.example.com/42.mp4"
+
+
 def test_get_pending_clips_returns_only_pending(db_path: Path) -> None:
     site_id = _insert_site(db_path)
     pending_id = _insert_clip(db_path, site_id, status="pending", r2_url="https://r2/x.mp4", caption="c1")

@@ -185,3 +185,154 @@ def test_post_to_buffer_returns_external_url() -> None:
 
     assert url == "https://tiktok.com/v/abc123"
     mock_client.post.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# post_pending_clips (orchestrator)
+# ---------------------------------------------------------------------------
+
+
+def test_post_pending_clips_uploads_and_posts_each_clip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """End-to-end with mocked I/O. Verifies R2 upload + Buffer post per clip."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import poster, queue
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', 'cap A', 'a,b')",
+            (site_id,),
+        ).lastrowid
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', 'cap B', 'c,d')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    finals_dir = tmp_path / "final"
+    finals_dir.mkdir()
+    (finals_dir / f"{a}.mp4").write_bytes(b"fake mp4 a")
+    (finals_dir / f"{b}.mp4").write_bytes(b"fake mp4 b")
+
+    # Track calls. The mock post identifies which clip it's handling by r2_url.
+    upload_calls: list[tuple[int, Path]] = []
+    post_calls: list[tuple[int, str, str]] = []
+
+    def fake_upload(mp4_path, settings, clip_id):
+        upload_calls.append((clip_id, mp4_path))
+        return f"https://media.example.com/{clip_id}.mp4"
+
+    async def fake_post(r2_url, caption_text, settings):
+        # Extract clip_id from r2_url
+        clip_id = int(r2_url.rsplit("/", 1)[-1].rsplit(".", 1)[0])
+        post_calls.append((clip_id, r2_url, caption_text))
+        return f"https://tiktok.com/v/{clip_id}"
+
+    monkeypatch.setattr(poster, "upload_to_r2", fake_upload)
+    monkeypatch.setattr(poster, "post_to_buffer", fake_post)
+
+    settings = _make_settings()
+    results = asyncio.run(poster.post_pending_clips(
+        db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
+    ))
+
+    # Both clips should be uploaded and posted
+    assert len(upload_calls) == 2
+    assert sorted(c[0] for c in upload_calls) == [a, b]
+    assert len(post_calls) == 2
+    assert sorted(p[0] for p in post_calls) == [a, b]
+
+    # Results list has both clips
+    assert len(results) == 2
+    assert sorted(r["clip_id"] for r in results) == [a, b]
+
+    # DB state: both clips should have r2_public_url and status='posted'
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT id, status, r2_public_url FROM clips ORDER BY id").fetchall()
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[a]["status"] == "posted"
+    assert by_id[a]["r2_public_url"] == f"https://media.example.com/{a}.mp4"
+    assert by_id[b]["status"] == "posted"
+    assert by_id[b]["r2_public_url"] == f"https://media.example.com/{b}.mp4"
+
+
+def test_post_pending_clips_marks_failures_without_crashing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One bad clip doesn't sink the batch — the failure is recorded."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import poster, queue
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', 'cap A', 'a,b')",
+            (site_id,),
+        ).lastrowid
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', 'cap B', 'c,d')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    finals_dir = tmp_path / "final"
+    finals_dir.mkdir()
+    (finals_dir / f"{a}.mp4").write_bytes(b"fake a")
+    (finals_dir / f"{b}.mp4").write_bytes(b"fake b")
+
+    def fake_upload(mp4_path, settings, clip_id):
+        if clip_id == b:
+            raise RuntimeError("R2 upload failed")
+        return f"https://media.example.com/{clip_id}.mp4"
+
+    async def fake_post(r2_url, caption_text, settings):
+        clip_id = int(r2_url.rsplit("/", 1)[-1].rsplit(".", 1)[0])
+        return f"https://tiktok.com/v/{clip_id}"
+
+    monkeypatch.setattr(poster, "upload_to_r2", fake_upload)
+    monkeypatch.setattr(poster, "post_to_buffer", fake_post)
+
+    settings = _make_settings()
+    results = asyncio.run(poster.post_pending_clips(
+        db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
+    ))
+
+    # Only 'a' should succeed; 'b' failed (R2 upload error) but the batch continued.
+    assert len(results) == 1
+    assert results[0]["clip_id"] == a
+
+    # DB state: 'a' is posted; 'b' is still 'approved' (left for retry).
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT id, status, r2_public_url FROM clips ORDER BY id").fetchall()
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[a]["status"] == "posted"
+    assert by_id[b]["status"] == "approved"
+    assert by_id[b]["r2_public_url"] is None
+
+    # The failure is recorded in the postings table.
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        failed = conn.execute(
+            "SELECT clip_id, status, error FROM postings WHERE clip_id=? AND status='failed'",
+            (b,),
+        ).fetchall()
+    assert len(failed) == 1
+    assert "r2 upload" in failed[0]["error"]

@@ -73,7 +73,26 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 
 def cmd_post(args: argparse.Namespace) -> int:
-    print("post: not yet implemented (scaffold plan)", file=sys.stderr)
+    """Post approved clips (uploads to R2, then posts via Buffer)."""
+    import asyncio
+    from pathlib import Path
+
+    from .config import load_settings
+    from .db import init_db
+    from .poster import post_pending_clips
+
+    db_path = Path("data/stumbleupon.db")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    init_db(db_path)
+
+    settings = load_settings()
+    finals_dir = db_path.parent / "final"
+    finals_dir.mkdir(parents=True, exist_ok=True)
+
+    posted = asyncio.run(post_pending_clips(
+        db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
+    ))
+    print(f"poster: {len(posted)} clips posted", file=sys.stderr)
     return 0
 
 

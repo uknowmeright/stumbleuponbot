@@ -309,3 +309,36 @@ def get_clips_to_review(db_path: Path, limit: int | None = None) -> list[Clip]:
     with get_connection(db_path) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_row_to_clip(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Poster-driven queries + transitions
+# ---------------------------------------------------------------------------
+
+
+def get_approved_clips(db_path: Path, limit: int | None = None) -> list[Clip]:
+    """Return approved clips, oldest first.
+
+    The poster handles R2 upload itself, so this query does NOT filter
+    by r2_public_url. The poster may pick up clips that already have an
+    R2 URL (e.g., after a partial failure where R2 succeeded but the
+    Buffer post failed) and retry the Buffer call.
+    """
+    sql = "SELECT * FROM clips WHERE status='approved' ORDER BY created_at ASC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (limit,)
+    else:
+        params = ()
+    with get_connection(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_clip(r) for r in rows]
+
+
+def set_clip_r2_url(db_path: Path, clip_id: int, r2_url: str) -> None:
+    """Set the r2_public_url column for a clip after R2 upload succeeds."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE clips SET r2_public_url=?, last_attempted=CURRENT_TIMESTAMP WHERE id=?",
+            (r2_url, clip_id),
+        )

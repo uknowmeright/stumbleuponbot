@@ -16,6 +16,7 @@ from pathlib import Path
 import boto3
 import httpx
 
+from . import queue
 from .config import Settings
 from .models import Clip
 
@@ -101,3 +102,60 @@ async def post_to_buffer(
     if not updates:
         raise RuntimeError(f"Buffer returned no updates: {result}")
     return updates[0].get("service_update", "")
+
+
+async def post_pending_clips(
+    db_path: Path,
+    settings: Settings,
+    finals_dir: Path,
+    limit: int = 3,
+) -> list[dict]:
+    """Post up to `limit` approved clips.
+
+    For each approved clip:
+      1. Upload the mp4 to R2 (idempotent: if the file is already there, this is fast)
+      2. Post to Buffer with the R2 URL + caption
+      3. On success: mark clip 'posted' and store the external URL
+      4. On failure: mark 'failed' in postings, leave clip as 'approved' for retry
+
+    Returns [{"clip_id", "external_url"}, ...] for clips that were successfully
+    posted. Per-clip failures are caught: the batch continues.
+    """
+    finals_dir = Path(finals_dir)
+    rows = queue.get_approved_clips(db_path, limit=limit)
+
+    out: list[dict] = []
+    for row in rows:
+        clip_id = row.id
+        final_path = finals_dir / f"{clip_id}.mp4"
+
+        try:
+            # Upload to R2 (idempotent: if the file is already there, this is fast)
+            r2_url = upload_to_r2(final_path, settings=settings, clip_id=clip_id)
+            queue.set_clip_r2_url(db_path, clip_id, r2_url=r2_url)
+        except Exception as exc:
+            queue.mark_posting_failed(
+                db_path, clip_id,
+                error=f"r2 upload: {type(exc).__name__}: {exc}",
+            )
+            print(f"poster: clip {clip_id} R2 upload failed: {exc!r}", file=sys.stderr, flush=True)
+            continue
+
+        try:
+            caption_text = build_caption_text(row)
+            external_url = await post_to_buffer(
+                r2_url=r2_url, caption_text=caption_text, settings=settings,
+            )
+        except Exception as exc:
+            queue.mark_posting_failed(
+                db_path, clip_id,
+                error=f"buffer post: {type(exc).__name__}: {exc}",
+            )
+            print(f"poster: clip {clip_id} buffer post failed: {exc!r}", file=sys.stderr, flush=True)
+            continue
+
+        queue.mark_posted(db_path, clip_id, external_url=external_url)
+        out.append({"clip_id": clip_id, "external_url": external_url})
+        print(f"poster: clip {clip_id} -> {external_url}", file=sys.stderr, flush=True)
+
+    return out
