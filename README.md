@@ -2,7 +2,7 @@
 
 A local TikTok pipeline for the weird web. Scrapes `stumbleupon.cc`, records short clips of using each site, generates captions via Claude, attaches trending sounds, and posts to TikTok via Buffer.
 
-**Status:** v1 scaffolding. Only the data model and CLI shell are in place; component plans follow.
+**Status:** v1 complete. All 8 components (scraper, recorder, captioner, sounds, composer, reviewer, poster, launchd) are implemented and tested. 192 tests passing. macOS launchd plists available via `stumbleupon install`.
 
 ## Setup
 
