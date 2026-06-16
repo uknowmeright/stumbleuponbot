@@ -252,3 +252,42 @@ def test_uninstall_all_is_noop_on_non_macos(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(launchd.subprocess, "run", fake_run)
     assert launchd.uninstall_all() == {}
+
+
+# ---------------------------------------------------------------------------
+# _build_*_plist schedule tests (lock in the actual schedule values)
+# ---------------------------------------------------------------------------
+
+
+def test_build_pipeline_plist_runs_at_10am_and_8pm(tmp_path: Path) -> None:
+    """The pipeline plist must run at 10am and 8pm (2x/day)."""
+    plist_bytes = launchd._build_pipeline_plist(
+        python="/usr/bin/python", project=tmp_path, log_dir=tmp_path / "logs",
+    )
+    parsed = plistlib.loads(plist_bytes)
+    assert parsed["StartCalendarInterval"] == [
+        {"Hour": 10, "Minute": 0},
+        {"Hour": 20, "Minute": 0},
+    ]
+
+
+def test_build_sounds_plist_runs_daily_at_3am(tmp_path: Path) -> None:
+    """The sounds plist must run daily at 3am (one entry in the calendar list)."""
+    plist_bytes = launchd._build_sounds_plist(
+        python="/usr/bin/python", project=tmp_path, log_dir=tmp_path / "logs",
+    )
+    parsed = plistlib.loads(plist_bytes)
+    # The implementation always wraps calendar entries in a list, even
+    # for single-entry schedules — this is consistent with the
+    # multi-entry case (pipeline plist) and is valid launchd syntax.
+    assert parsed["StartCalendarInterval"] == [{"Hour": 3, "Minute": 0}]
+
+
+def test_build_poster_plist_runs_every_15_minutes(tmp_path: Path) -> None:
+    """The poster plist must use StartInterval=900 (15 minutes), not calendar entries."""
+    plist_bytes = launchd._build_poster_plist(
+        python="/usr/bin/python", project=tmp_path, log_dir=tmp_path / "logs",
+    )
+    parsed = plistlib.loads(plist_bytes)
+    assert parsed["StartInterval"] == 900
+    assert "StartCalendarInterval" not in parsed

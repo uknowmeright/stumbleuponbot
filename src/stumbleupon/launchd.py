@@ -66,27 +66,24 @@ def render_plist(
     return plistlib.dumps(plist)
 
 
-def merge_calendar_schedule(plist: dict, *, hour: int, minute: int) -> dict:
-    """Add a single StartCalendarInterval entry to the plist dict."""
+def merge_calendar_schedule(plist: dict, *, hour: int, minute: int) -> None:
+    """Add a single StartCalendarInterval entry to the plist dict (in place)."""
     plist.setdefault("StartCalendarInterval", []).append(
         {"Hour": hour, "Minute": minute}
     )
-    return plist
 
 
 def merge_calendar_schedule_multi(
     plist: dict, hours_minutes: list[tuple[int, int]]
-) -> dict:
-    """Add multiple StartCalendarInterval entries (for 2x/day patterns)."""
+) -> None:
+    """Add multiple StartCalendarInterval entries (in place, for 2x/day patterns)."""
     for hour, minute in hours_minutes:
         merge_calendar_schedule(plist, hour=hour, minute=minute)
-    return plist
 
 
-def merge_interval_schedule(plist: dict, *, seconds: int) -> dict:
-    """Set StartInterval = seconds for the plist dict."""
+def merge_interval_schedule(plist: dict, *, seconds: int) -> None:
+    """Set StartInterval = seconds on the plist dict (in place)."""
     plist["StartInterval"] = seconds
-    return plist
 
 
 def installed_plist_path(label: str) -> Path:
