@@ -14,7 +14,6 @@ import sys
 import time
 from pathlib import Path
 
-from .db import get_connection
 from . import queue
 from playwright.sync_api import sync_playwright
 
@@ -193,14 +192,15 @@ def refresh_catalog(
     count = 0
     for row in rows:
         sid = row["tiktok_sound_id"]
-        audio_path = audio_dir / f"{sid}.mp3"
-        if not audio_path.exists():
+        target = audio_dir / f"{sid}.mp3"
+        audio_path: Path | None = target
+        if not target.exists():
             try:
                 # Creative Center doesn't expose a direct CDN URL; the
                 # caller may pass a different download_fn. For v1 we
                 # just construct a TikTok sound URL convention.
                 sound_url = f"https://www.tiktok.com/sound/{sid}"
-                download_fn(sound_url, audio_path)
+                download_fn(sound_url, target)
             except Exception as exc:
                 print(
                     f"sounds: download failed for {sid}: {exc!r}; "
@@ -208,7 +208,7 @@ def refresh_catalog(
                     file=sys.stderr,
                     flush=True,
                 )
-                audio_path = None  # type: ignore[assignment]
+                audio_path = None
         try:
             queue.upsert_sound(
                 db_path,

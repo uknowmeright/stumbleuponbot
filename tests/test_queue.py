@@ -794,16 +794,22 @@ def test_mark_clip_needs_attention_updates_status(db_path: Path) -> None:
 
 
 def test_get_clips_needing_sound_filters_correctly(db_path: Path) -> None:
-    """Returns only pending clips with caption + recording, no sound yet."""
+    """Returns only pending clips with caption + recording, no sound yet.
+
+    Also exercises the `ORDER BY created_at ASC` clause by inserting
+    two qualifying clips with explicit, distinct `created_at` values
+    (so the test isn't dependent on `DEFAULT CURRENT_TIMESTAMP`
+    resolving to identical values for both inserts in the same call).
+    """
     with sqlite3_connect(db_path) as conn:
         site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
         sound_id = conn.execute(
             "INSERT INTO sounds (tiktok_sound_id) VALUES ('s1')"
         ).lastrowid
-        # 1: pending, no sound, has caption + recording → should be picked
+        # 1: pending, no sound, has caption + recording → should be picked (earliest)
         a = conn.execute(
-            "INSERT INTO clips (site_id, status, recording_path, caption, sound_id) "
-            "VALUES (?, 'pending', 'r.webm', 'cap', NULL)",
+            "INSERT INTO clips (site_id, status, recording_path, caption, sound_id, created_at) "
+            "VALUES (?, 'pending', 'r.webm', 'cap', NULL, '2026-01-01 00:00:00')",
             (site_id,),
         ).lastrowid
         # 2: pending, has sound → skip
@@ -824,8 +830,15 @@ def test_get_clips_needing_sound_filters_correctly(db_path: Path) -> None:
             "VALUES (?, 'needs_attention', 'r.webm', 'cap', NULL)",
             (site_id,),
         ).lastrowid
+        # 5: pending, no sound, has caption + recording → should be picked (later than #1)
+        e = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, caption, sound_id, created_at) "
+            "VALUES (?, 'pending', 'r2.webm', 'cap2', NULL, '2026-06-15 00:00:00')",
+            (site_id,),
+        ).lastrowid
         conn.commit()
 
     rows = queue.get_clips_needing_sound(db_path)
     ids = [r.id for r in rows]
-    assert ids == [a]
+    # Two qualifying clips, in `created_at ASC` order.
+    assert ids == [a, e]

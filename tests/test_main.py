@@ -145,3 +145,52 @@ def test_attach_sounds_to_pending_clips_no_clips_is_noop(db_path: Path) -> None:
     sounds = _make_sounds(db_path, 2)
     attached = attach_sounds_to_pending_clips(db_path, [], sounds)
     assert attached == 0
+
+
+def test_attach_sounds_to_pending_clips_isolates_per_clip_failures(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure on one clip doesn't sink the batch — the others still attach.
+
+    monkeypatches queue.attach_sound_to_clip so the 2nd clip raises;
+    verifies clips 1 and 3 are processed normally.
+    """
+    from stumbleupon import queue as q
+
+    clips = _make_clips(db_path, 3)
+    sounds = _make_sounds(db_path, 3)
+    failing_clip_id = clips[1].id
+
+    real_attach = q.attach_sound_to_clip
+    call_count = {"n": 0}
+
+    def maybe_failing(db_path, clip_id, sound_id):
+        call_count["n"] += 1
+        if clip_id == failing_clip_id:
+            raise RuntimeError("simulated DB error")
+        return real_attach(db_path, clip_id, sound_id)
+
+    monkeypatch.setattr(q, "attach_sound_to_clip", maybe_failing)
+
+    attached = attach_sounds_to_pending_clips(db_path, clips, sounds)
+
+    # All 3 attempts happened; only 2 succeeded (the failing one didn't
+    # attach, so the count of "sounds attached" is 2).
+    assert call_count["n"] == 3
+    assert attached == 2
+
+    with sqlite3_connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, status, sound_id FROM clips ORDER BY id"
+        ).fetchall()
+    by_id = {r["id"]: r for r in rows}
+
+    # Clip 1: attached normally.
+    assert by_id[clips[0].id]["sound_id"] == sounds[0].id
+    assert by_id[clips[0].id]["status"] == "pending"
+    # Clip 2: failed, status untouched (still pending), no sound attached.
+    assert by_id[clips[1].id]["sound_id"] is None
+    assert by_id[clips[1].id]["status"] == "pending"
+    # Clip 3: attached normally — the batch continued past the failure.
+    assert by_id[clips[2].id]["sound_id"] == sounds[2].id
+    assert by_id[clips[2].id]["status"] == "pending"

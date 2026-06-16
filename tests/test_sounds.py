@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -269,7 +268,6 @@ def test_refresh_catalog_uploads_top_n_to_db(
     """End-to-end with fakes. Verifies scrape → parse → download → upsert."""
     import sqlite3
     from stumbleupon.db import init_db
-    from stumbleupon import queue
 
     db_path = tmp_path / "stumbleupon.db"
     init_db(db_path)

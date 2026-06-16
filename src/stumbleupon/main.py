@@ -5,32 +5,42 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path as _Path
+from pathlib import Path
 
-from . import queue as _queue
-from .models import Clip as _Clip, Sound as _Sound
+from . import queue
+from .models import Clip, Sound
 
 
 def attach_sounds_to_pending_clips(
-    db_path: _Path,
-    pending_for_sound: list[_Clip],
-    sounds_batch: list[_Sound],
+    db_path: Path,
+    pending_for_sound: list[Clip],
+    sounds_batch: list[Sound],
 ) -> int:
     """Attach a sound to each pending clip, or mark `needs_attention` if none left.
 
-    Pairwise by index. Returns the count of clips that received a sound.
+    Pairwise by index. Per-clip failures are caught so one bad row
+    doesn't sink the batch — the rest still get processed. Returns
+    the count of clips that received a sound.
     """
     sounds_attached = 0
     for i, clip in enumerate(pending_for_sound):
-        if i < len(sounds_batch):
-            sound = sounds_batch[i]
-            _queue.attach_sound_to_clip(db_path, clip.id, sound.id)
-            sounds_attached += 1
-        else:
-            _queue.mark_clip_needs_attention(db_path, clip.id)
+        try:
+            if i < len(sounds_batch):
+                sound = sounds_batch[i]
+                queue.attach_sound_to_clip(db_path, clip.id, sound.id)
+                sounds_attached += 1
+            else:
+                queue.mark_clip_needs_attention(db_path, clip.id)
+                print(
+                    f"sounds: clip {clip.id} marked needs_attention (no sound available)",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
             print(
-                f"sounds: clip {clip.id} marked needs_attention (no sound available)",
+                f"sounds: clip {clip.id} pick failed: {type(exc).__name__}: {exc}; "
+                f"continuing with next clip",
                 file=sys.stderr,
+                flush=True,
             )
     return sounds_attached
 
@@ -38,7 +48,6 @@ def attach_sounds_to_pending_clips(
 def cmd_run(args: argparse.Namespace) -> int:
     """One pipeline pass: scrape, record, caption, then compose."""
     import asyncio
-    from pathlib import Path
 
     from .captioner import caption_pending_recordings
     from .composer import compose_pending_clips
@@ -72,15 +81,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     ))
     print(f"captioner: {len(clips)} clips queued for review", file=sys.stderr)
 
-    # Step 4: pick a trending sound for each pending clip
-    from . import queue as q
-
-    pending_for_sound = q.get_clips_needing_sound(db_path)
+    # Step 4: pick a trending sound for each pending clip.
     # Pick the batch up front (not one-at-a-time) so we don't fall
     # victim to the `last_used_at < now - 3 days` filter stamping
     # earlier picks as recently-used and starving later clips in the
     # same run.
-    sounds_batch = q.get_next_sounds(db_path, limit=len(pending_for_sound))
+    pending_for_sound = queue.get_clips_needing_sound(db_path, limit=5)
+    sounds_batch = queue.get_next_sounds(db_path, limit=len(pending_for_sound))
     sounds_attached = attach_sounds_to_pending_clips(
         db_path, pending_for_sound, sounds_batch,
     )

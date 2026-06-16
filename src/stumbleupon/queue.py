@@ -50,6 +50,19 @@ def _row_to_posting(row: sqlite3.Row) -> Posting:
     )
 
 
+def _row_to_sound(row: sqlite3.Row) -> Sound:
+    return Sound(
+        id=row["id"],
+        tiktok_sound_id=row["tiktok_sound_id"],
+        title=row["title"],
+        artist=row["artist"],
+        audio_path=row["audio_path"],
+        trending_score=row["trending_score"],
+        fetched_at=row["fetched_at"],
+        last_used_at=row["last_used_at"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reviewer-driven transitions
 # ---------------------------------------------------------------------------
@@ -402,33 +415,22 @@ def get_next_sounds(
     """Return up to `limit` highest-trending sounds not used in the last N days.
 
     Skips sounds with NULL audio_path (not yet downloaded). Ordered by
-    trending_score DESC, then fetched_at DESC. Returns an empty list
-    when the catalog has no eligible sounds (or fewer than `limit`).
+    trending_score DESC, then fetched_at DESC, then id DESC (final
+    tie-breaker for determinism). Returns an empty list when the
+    catalog has no eligible sounds (or fewer than `limit`).
     """
     sql = (
         "SELECT * FROM sounds "
         "WHERE audio_path IS NOT NULL "
         "AND (last_used_at IS NULL "
         "     OR last_used_at < datetime('now', ?)) "
-        "ORDER BY trending_score DESC, fetched_at DESC "
+        "ORDER BY trending_score DESC, fetched_at DESC, id DESC "
         "LIMIT ?"
     )
     days_modifier = f"-{exclude_used_within_days} days"
     with get_connection(db_path) as conn:
         rows = conn.execute(sql, (days_modifier, limit)).fetchall()
-    return [
-        Sound(
-            id=row["id"],
-            tiktok_sound_id=row["tiktok_sound_id"],
-            title=row["title"],
-            artist=row["artist"],
-            audio_path=row["audio_path"],
-            trending_score=row["trending_score"],
-            fetched_at=row["fetched_at"],
-            last_used_at=row["last_used_at"],
-        )
-        for row in rows
-    ]
+    return [_row_to_sound(row) for row in rows]
 
 
 def get_next_sound(
@@ -469,19 +471,25 @@ def mark_clip_needs_attention(db_path: Path, clip_id: int) -> None:
         )
 
 
-def get_clips_needing_sound(db_path: Path) -> list[Clip]:
+def get_clips_needing_sound(db_path: Path, limit: int | None = None) -> list[Clip]:
     """Pending clips with caption + recording, no sound yet — the pick step.
 
     These are clips the captioner has finished; the composer hasn't
     picked them up yet; the sound hasn't been attached.
     """
+    sql = (
+        "SELECT * FROM clips "
+        "WHERE status='pending' "
+        "AND sound_id IS NULL "
+        "AND recording_path IS NOT NULL "
+        "AND caption IS NOT NULL "
+        "ORDER BY created_at ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (limit,)
+    else:
+        params = ()
     with get_connection(db_path) as conn:
-        rows = conn.execute(
-            "SELECT * FROM clips "
-            "WHERE status='pending' "
-            "AND sound_id IS NULL "
-            "AND recording_path IS NOT NULL "
-            "AND caption IS NOT NULL "
-            "ORDER BY created_at ASC"
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [_row_to_clip(r) for r in rows]
