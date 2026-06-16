@@ -46,6 +46,30 @@ pytest --cov=stumbleupon
 # Lint / type-check (not yet configured)
 ```
 
+## Scheduling (macOS)
+
+Three `launchd` plists schedule the pipeline on macOS:
+
+| Label | Schedule | Command |
+|---|---|---|
+| `com.user.stumbleupon.pipeline` | 2x/day at 10am + 8pm | `python -m stumbleupon run` |
+| `com.user.stumbleupon.sounds` | 1x/day at 3am | `python -m stumbleupon scrape-sounds` |
+| `com.user.stumbleupon.poster` | every 15 min | `python -m stumbleupon post` |
+
+Install / uninstall:
+
+```bash
+.venv/bin/stumbleupon install      # copies 3 plists to ~/Library/LaunchAgents/ + launchctl load
+.venv/bin/stumbleupon uninstall    # launchctl unload + delete the 3 plists
+launchctl list | grep stumbleupon   # verify the 3 jobs are scheduled
+```
+
+Logs are written to `data/logs/com.user.stumbleupon.<name>.{out,err}.log`.
+
+**macOS-only caveat:** `launchd` will not run scheduled jobs while the Mac is asleep. If the lid is closed overnight, the morning job runs as soon as the Mac wakes. If the Mac is shut down, jobs are missed (no catch-up). For long sleeps, enable "Wake for network access" in System Settings → Energy.
+
+Sample plists live in `launchd/` (the install command renders them with your real paths and writes the binary plist to `~/Library/LaunchAgents/`).
+
 ## Project layout
 
 See [docs/superpowers/specs/2026-06-10-stumbleupon-pipeline-design.md](docs/superpowers/specs/2026-06-10-stumbleupon-pipeline-design.md) for the full v1 design and `docs/tone-guide.md` for the captioner tone.
@@ -56,6 +80,7 @@ src/stumbleupon/
 ├── composer.py  # ffmpeg → final 1080x1920 mp4
 ├── config.py    # Settings loaded from .env
 ├── db.py        # SQLite schema + connection helpers
+├── launchd.py   # macOS launchd plist render + install/uninstall
 ├── main.py      # CLI entry point
 ├── models.py    # Site, Clip, Sound, Posting dataclasses
 ├── poster.py    # R2 upload + Buffer post
@@ -76,4 +101,4 @@ This plan covers the scaffold. Future plans:
 - Composer (ffmpeg) — done
 - Reviewer (CLI) — done
 - Poster (Buffer + R2) — done
-- launchd plists
+- launchd plists — done

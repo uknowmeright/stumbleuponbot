@@ -192,6 +192,39 @@ def cmd_show_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_install(args: argparse.Namespace) -> int:
+    """Install the 3 launchd plists into ~/Library/LaunchAgents/ and load them.
+
+    No-op on non-macOS.
+    """
+    from .launchd import install_all
+
+    installed = install_all()
+    if installed:
+        print(
+            f"launchd: {len(installed)} jobs installed and loaded. "
+            f"Check `launchctl list | grep stumbleupon`.",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Unload and delete the 3 launchd plists from ~/Library/LaunchAgents/.
+
+    No-op on non-macOS.
+    """
+    from .launchd import uninstall_all
+
+    removed = uninstall_all()
+    if removed:
+        print(
+            f"launchd: {sum(removed.values())} jobs removed.",
+            file=sys.stderr,
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="stumbleupon")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -200,6 +233,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("review", help="interactive CLI to approve/reject pending clips").set_defaults(func=cmd_review)
     sub.add_parser("post", help="post approved clips whose scheduled time has arrived").set_defaults(func=cmd_post)
     sub.add_parser("scrape-sounds", help="refresh trending TikTok sounds catalog").set_defaults(func=cmd_scrape_sounds)
+    sub.add_parser("install", help="install launchd plists (macOS)").set_defaults(func=cmd_install)
+    sub.add_parser("uninstall", help="uninstall launchd plists (macOS)").set_defaults(func=cmd_uninstall)
     sub.add_parser("show-config", help="print loaded settings (redacted)").set_defaults(func=cmd_show_config)
     return parser
 

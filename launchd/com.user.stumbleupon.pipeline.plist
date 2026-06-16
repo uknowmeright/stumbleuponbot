@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.stumbleupon.pipeline</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/you/dev/stumbleupon/.venv/bin/python</string>
+        <string>-m</string>
+        <string>stumbleupon</string>
+        <string>run</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/you/dev/stumbleupon</string>
+    <key>StandardOutPath</key>
+    <string>/Users/you/dev/stumbleupon/data/logs/com.user.stumbleupon.pipeline.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/you/dev/stumbleupon/data/logs/com.user.stumbleupon.pipeline.err.log</string>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>10</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
