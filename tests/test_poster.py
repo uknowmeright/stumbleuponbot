@@ -241,7 +241,7 @@ def test_post_pending_clips_uploads_and_posts_each_clip(
     monkeypatch.setattr(poster, "post_to_buffer", fake_post)
 
     settings = _make_settings()
-    results = asyncio.run(poster.post_pending_clips(
+    posted, failed = asyncio.run(poster.post_pending_clips(
         db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
     ))
 
@@ -251,9 +251,10 @@ def test_post_pending_clips_uploads_and_posts_each_clip(
     assert len(post_calls) == 2
     assert sorted(p[0] for p in post_calls) == [a, b]
 
-    # Results list has both clips
-    assert len(results) == 2
-    assert sorted(r["clip_id"] for r in results) == [a, b]
+    # Results list has both clips; no failures
+    assert len(posted) == 2
+    assert sorted(r["clip_id"] for r in posted) == [a, b]
+    assert failed == []
 
     # DB state: both clips should have r2_public_url and status='posted'
     with sqlite3.connect(db_path) as conn:
@@ -310,13 +311,17 @@ def test_post_pending_clips_marks_failures_without_crashing(
     monkeypatch.setattr(poster, "post_to_buffer", fake_post)
 
     settings = _make_settings()
-    results = asyncio.run(poster.post_pending_clips(
+    posted, failed = asyncio.run(poster.post_pending_clips(
         db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
     ))
 
     # Only 'a' should succeed; 'b' failed (R2 upload error) but the batch continued.
-    assert len(results) == 1
-    assert results[0]["clip_id"] == a
+    assert len(posted) == 1
+    assert posted[0]["clip_id"] == a
+    # The failure should be surfaced with the clip_id and an error message.
+    assert len(failed) == 1
+    assert failed[0]["clip_id"] == b
+    assert "r2 upload" in failed[0]["error"]
 
     # DB state: 'a' is posted; 'b' is still 'approved' (left for retry).
     with sqlite3.connect(db_path) as conn:
@@ -336,3 +341,98 @@ def test_post_pending_clips_marks_failures_without_crashing(
         ).fetchall()
     assert len(failed) == 1
     assert "r2 upload" in failed[0]["error"]
+
+
+def test_post_pending_clips_returns_empty_failures_on_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When all clips post successfully, the failures list is empty (not None, not absent)."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import poster
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', 'cap A', 'a,b')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    finals_dir = tmp_path / "final"
+    finals_dir.mkdir()
+    (finals_dir / f"{a}.mp4").write_bytes(b"fake a")
+
+    def fake_upload(mp4_path, settings, clip_id):
+        return f"https://media.example.com/{clip_id}.mp4"
+
+    async def fake_post(r2_url, caption_text, settings):
+        clip_id = int(r2_url.rsplit("/", 1)[-1].rsplit(".", 1)[0])
+        return f"https://tiktok.com/v/{clip_id}"
+
+    monkeypatch.setattr(poster, "upload_to_r2", fake_upload)
+    monkeypatch.setattr(poster, "post_to_buffer", fake_post)
+
+    settings = _make_settings()
+    posted, failed = asyncio.run(poster.post_pending_clips(
+        db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
+    ))
+
+    # Success: posted has the clip, failed is an empty list (not None, not missing).
+    assert len(posted) == 1
+    assert posted[0]["clip_id"] == a
+    assert failed == []
+
+
+def test_post_pending_clips_returns_failures_with_error_info(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When a clip fails, the failure entry has clip_id and a non-empty error string."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import poster
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'approved', 'r.webm', 'f.mp4', 'cap A', 'a,b')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    finals_dir = tmp_path / "final"
+    finals_dir.mkdir()
+    (finals_dir / f"{a}.mp4").write_bytes(b"fake a")
+
+    def fake_upload(mp4_path, settings, clip_id):
+        raise RuntimeError("network unreachable")
+
+    async def fake_post(r2_url, caption_text, settings):
+        return "https://tiktok.com/v/x"  # never reached
+
+    monkeypatch.setattr(poster, "upload_to_r2", fake_upload)
+    monkeypatch.setattr(poster, "post_to_buffer", fake_post)
+
+    settings = _make_settings()
+    posted, failed = asyncio.run(poster.post_pending_clips(
+        db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
+    ))
+
+    # Nothing posted; one failure surfaced.
+    assert posted == []
+    assert len(failed) == 1
+    entry = failed[0]
+    assert set(entry.keys()) == {"clip_id", "error"}
+    assert entry["clip_id"] == a
+    assert "r2 upload" in entry["error"]
+    assert "network unreachable" in entry["error"]

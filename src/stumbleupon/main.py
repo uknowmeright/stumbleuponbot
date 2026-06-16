@@ -146,16 +146,21 @@ def cmd_post(args: argparse.Namespace) -> int:
     finals_dir = db_path.parent / "final"
     finals_dir.mkdir(parents=True, exist_ok=True)
 
-    posted = asyncio.run(post_pending_clips(
+    posted, failed = asyncio.run(post_pending_clips(
         db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
     ))
     print(f"poster: {len(posted)} clips posted", file=sys.stderr)
 
     from .notifier import notify
-    if posted:
+    if failed:
+        notify(
+            "stumbleupon",
+            f"{len(failed)} clip(s) failed to post ({len(posted)} succeeded)",
+            sound="Basso",
+        )
+    elif posted:
         notify("stumbleupon", f"Posted {len(posted)} clip(s)")
-    else:
-        notify("stumbleupon", "No clips to post (or all failed)", sound="Basso")
+    # else: silent — no clips ready, no failure, nothing to do
     return 0
 
 

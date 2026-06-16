@@ -109,7 +109,7 @@ async def post_pending_clips(
     settings: Settings,
     finals_dir: Path,
     limit: int = 3,
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
     """Post up to `limit` approved clips.
 
     For each approved clip:
@@ -118,13 +118,18 @@ async def post_pending_clips(
       3. On success: mark clip 'posted' and store the external URL
       4. On failure: mark 'failed' in postings, leave clip as 'approved' for retry
 
-    Returns [{"clip_id", "external_url"}, ...] for clips that were successfully
-    posted. Per-clip failures are caught: the batch continues.
+    Returns (posted, failed) where:
+      posted: [{"clip_id", "external_url"}, ...] for clips that were successfully
+              posted
+      failed: [{"clip_id", "error"}, ...] for clips whose R2 upload or Buffer
+              post attempt failed
+    Per-clip failures are caught: the batch continues.
     """
     finals_dir = Path(finals_dir)
     rows = queue.get_approved_clips(db_path, limit=limit)
 
-    out: list[dict] = []
+    posted: list[dict] = []
+    failed: list[dict] = []
     for row in rows:
         clip_id = row.id
         final_path = finals_dir / f"{clip_id}.mp4"
@@ -134,10 +139,12 @@ async def post_pending_clips(
             r2_url = upload_to_r2(final_path, settings=settings, clip_id=clip_id)
             queue.set_clip_r2_url(db_path, clip_id, r2_url=r2_url)
         except Exception as exc:
+            error_msg = f"r2 upload: {type(exc).__name__}: {exc}"
             queue.mark_posting_failed(
                 db_path, clip_id,
-                error=f"r2 upload: {type(exc).__name__}: {exc}",
+                error=error_msg,
             )
+            failed.append({"clip_id": clip_id, "error": error_msg})
             print(f"poster: clip {clip_id} R2 upload failed: {exc!r}", file=sys.stderr, flush=True)
             continue
 
@@ -147,15 +154,17 @@ async def post_pending_clips(
                 r2_url=r2_url, caption_text=caption_text, settings=settings,
             )
         except Exception as exc:
+            error_msg = f"buffer post: {type(exc).__name__}: {exc}"
             queue.mark_posting_failed(
                 db_path, clip_id,
-                error=f"buffer post: {type(exc).__name__}: {exc}",
+                error=error_msg,
             )
+            failed.append({"clip_id": clip_id, "error": error_msg})
             print(f"poster: clip {clip_id} buffer post failed: {exc!r}", file=sys.stderr, flush=True)
             continue
 
         queue.mark_posted(db_path, clip_id, external_url=external_url)
-        out.append({"clip_id": clip_id, "external_url": external_url})
+        posted.append({"clip_id": clip_id, "external_url": external_url})
         print(f"poster: clip {clip_id} -> {external_url}", file=sys.stderr, flush=True)
 
-    return out
+    return posted, failed
