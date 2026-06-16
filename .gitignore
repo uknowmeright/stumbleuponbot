@@ -26,3 +26,6 @@ venv/
 .idea/
 .vscode/
 *.swp
+
+# playwright MCP cache
+.playwright-mcp/
