@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from stumbleupon import reviewer
 from stumbleupon.models import Clip
 
@@ -174,3 +176,88 @@ def test_open_clip_in_player_runs_open(tmp_path: Path) -> None:
     cmd = mock_run.call_args.args[0]
     assert cmd[0] == "open"
     assert str(mp4) in cmd
+
+
+# ---------------------------------------------------------------------------
+# review_pending_clips (orchestrator)
+# ---------------------------------------------------------------------------
+
+
+def test_review_pending_clips_processes_actions(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """End-to-end with mocked I/O. Verifies actions are applied to the DB."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import queue, reviewer
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'pending', 'data/recordings/1.webm', 'data/final/1.mp4', "
+            "'caption A', 'a,b,c')",
+            (site_id,),
+        ).lastrowid
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, caption, hashtags) "
+            "VALUES (?, 'pending', 'data/recordings/2.webm', 'data/final/2.mp4', "
+            "'caption B', 'd,e,f')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    # Mock the I/O: open_clip_in_player is a no-op, prompt returns the next action
+    monkeypatch.setattr(reviewer, "open_clip_in_player", lambda mp4: None)
+
+    actions = iter(["a", "r", "q"])  # approve a, reject b, quit
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(actions))
+
+    results = reviewer.review_pending_clips(db_path=db_path, limit=10)
+
+    assert results == {a: "approved", b: "rejected"}
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row_a = conn.execute("SELECT status FROM clips WHERE id=?", (a,)).fetchone()
+        row_b = conn.execute("SELECT status FROM clips WHERE id=?", (b,)).fetchone()
+    assert row_a["status"] == "approved"
+    assert row_b["status"] == "rejected"
+
+
+def test_review_pending_clips_handles_quit_early(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Quitting on the first clip leaves the rest untouched."""
+    import sqlite3
+    from stumbleupon.db import init_db
+    from stumbleupon import queue, reviewer
+
+    db_path = tmp_path / "stumbleupon.db"
+    init_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'pending', 'r.webm', 'f.mp4')",
+            (site_id,),
+        ).lastrowid
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'pending', 'r.webm', 'f.mp4')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    monkeypatch.setattr(reviewer, "open_clip_in_player", lambda mp4: None)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "q")  # quit on first clip
+
+    results = reviewer.review_pending_clips(db_path=db_path, limit=10)
+
+    assert results == {}
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row_b = conn.execute("SELECT status FROM clips WHERE id=?", (b,)).fetchone()
+    assert row_b["status"] == "pending"

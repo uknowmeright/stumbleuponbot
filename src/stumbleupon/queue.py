@@ -280,3 +280,32 @@ def mark_clip_composed(db_path: Path, clip_id: int, final_path: str) -> None:
             "WHERE id=?",
             (final_path, clip_id),
         )
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-driven queries
+# ---------------------------------------------------------------------------
+
+
+def get_clips_to_review(db_path: Path, limit: int | None = None) -> list[Clip]:
+    """Return pending clips that have a final_path but no r2_public_url.
+
+    These are the clips the reviewer should process. Already-posted
+    clips (r2_public_url set) and clips without a composer output
+    (final_path NULL) are excluded.
+    """
+    sql = (
+        "SELECT * FROM clips "
+        "WHERE status='pending' "
+        "AND final_path IS NOT NULL "
+        "AND r2_public_url IS NULL "
+        "ORDER BY created_at ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params = (limit,)
+    else:
+        params = ()
+    with get_connection(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_clip(r) for r in rows]

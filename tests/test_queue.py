@@ -380,3 +380,40 @@ def test_mark_clip_composed_stamps_last_attempted(db_path: Path) -> None:
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT last_attempted FROM clips WHERE id=?", (clip_id,)).fetchone()
     assert row["last_attempted"] is not None
+
+
+def test_get_clips_to_review_finds_pending_with_final_path(db_path: Path) -> None:
+    """Returns clips that have final_path but no r2_public_url, status=pending."""
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        # 1: pending + final (should be picked)
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, r2_public_url) "
+            "VALUES (?, 'pending', 'data/recordings/1.webm', 'data/final/1.mp4', NULL)",
+            (site_id,),
+        ).lastrowid
+        # 2: pending + final + r2 (already posted, skip)
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path, r2_public_url) "
+            "VALUES (?, 'pending', 'data/recordings/2.webm', 'data/final/2.mp4', 'https://r2/2.mp4')",
+            (site_id,),
+        ).lastrowid
+        # 3: pending, no final (composer hasn't run, skip)
+        c = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'pending', 'data/recordings/3.webm', NULL)",
+            (site_id,),
+        ).lastrowid
+        # 4: approved (already reviewed, skip)
+        d = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, final_path) "
+            "VALUES (?, 'approved', 'data/recordings/4.webm', 'data/final/4.mp4')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    rows = queue.get_clips_to_review(db_path)
+    ids = [r.id for r in rows]
+    assert ids == [a]

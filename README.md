@@ -57,6 +57,7 @@ src/stumbleupon/
 ├── models.py    # Site, Clip, Sound, Posting dataclasses
 ├── queue.py     # The only module that mutates clips.status
 ├── recorder.py  # 30s vertical video clips via Playwright
+├── reviewer.py  # human-in-the-loop CLI for clip approval
 └── scraper.py   # stumbleupon.cc → fresh sites (Supabase API)
 ```
 
@@ -68,6 +69,6 @@ This plan covers the scaffold. Future plans:
 - Captioner (Claude + tone guide) — done
 - Sounds (TikTok trending scrape)
 - Composer (ffmpeg) — done
-- Reviewer (CLI)
+- Reviewer (CLI) — done
 - Poster (Buffer + R2)
 - launchd plists

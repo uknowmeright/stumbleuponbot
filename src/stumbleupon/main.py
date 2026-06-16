@@ -57,7 +57,18 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_review(args: argparse.Namespace) -> int:
-    print("review: not yet implemented (scaffold plan)", file=sys.stderr)
+    """Interactive review of pending clips (opens mp4s in QuickTime, prompts for actions)."""
+    from pathlib import Path
+
+    from .db import init_db
+    from .reviewer import review_pending_clips
+
+    db_path = Path("data/stumbleupon.db")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    init_db(db_path)
+
+    results = review_pending_clips(db_path=db_path, limit=10)
+    print(f"review: {len(results)} clips acted on", file=sys.stderr)
     return 0
 
 
