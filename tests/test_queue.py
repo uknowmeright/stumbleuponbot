@@ -491,3 +491,178 @@ def test_upsert_sound_inserts_and_updates(db_path: Path) -> None:
         row = conn.execute("SELECT title, trending_score FROM sounds WHERE id=?", (id1,)).fetchone()
     assert row["title"] == "Updated"
     assert row["trending_score"] == 200.0
+
+
+# ---------------------------------------------------------------------------
+# Sounds-driven queries + transitions (selection-side)
+# ---------------------------------------------------------------------------
+
+
+def test_count_sounds_returns_total(db_path: Path) -> None:
+    """count_sounds returns the row count."""
+    assert queue.count_sounds(db_path) == 0
+    with sqlite3_connect(db_path) as conn:
+        conn.execute("INSERT INTO sounds (tiktok_sound_id) VALUES ('a')")
+        conn.execute("INSERT INTO sounds (tiktok_sound_id) VALUES ('b')")
+        conn.commit()
+    assert queue.count_sounds(db_path) == 2
+
+
+def test_get_next_sound_picks_highest_score(db_path: Path) -> None:
+    """Selection should be ordered by trending_score DESC."""
+    with sqlite3_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('a', 100, '/tmp/a.mp3')"
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('b', 500, '/tmp/b.mp3')"
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('c', 250, '/tmp/c.mp3')"
+        )
+        conn.commit()
+
+    sound = queue.get_next_sound(db_path)
+    assert sound is not None
+    assert sound.tiktok_sound_id == "b"
+
+
+def test_get_next_sound_skips_sounds_without_audio(db_path: Path) -> None:
+    """Sounds with NULL audio_path are unusable; skip them."""
+    with sqlite3_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('a', 999, NULL)"  # highest score but no audio
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('b', 100, '/tmp/b.mp3')"
+        )
+        conn.commit()
+
+    sound = queue.get_next_sound(db_path)
+    assert sound is not None
+    assert sound.tiktok_sound_id == "b"
+
+
+def test_get_next_sound_excludes_recently_used(db_path: Path) -> None:
+    """A sound used in the last 3 days should be excluded."""
+    with sqlite3_connect(db_path) as conn:
+        # 'a' was used today
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path, last_used_at) "
+            "VALUES ('a', 999, '/tmp/a.mp3', CURRENT_TIMESTAMP)"
+        )
+        # 'b' is fresh
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path, last_used_at) "
+            "VALUES ('b', 100, '/tmp/b.mp3', NULL)"
+        )
+        conn.commit()
+
+    sound = queue.get_next_sound(db_path, exclude_used_within_days=3)
+    assert sound is not None
+    assert sound.tiktok_sound_id == "b"
+
+
+def test_get_next_sound_returns_none_when_empty(db_path: Path) -> None:
+    """Empty catalog → None (caller marks clip needs_attention)."""
+    assert queue.get_next_sound(db_path) is None
+
+
+def test_get_next_sound_returns_none_when_all_recently_used(db_path: Path) -> None:
+    """All sounds used recently → None."""
+    with sqlite3_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path, last_used_at) "
+            "VALUES ('a', 999, '/tmp/a.mp3', CURRENT_TIMESTAMP)"
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path, last_used_at) "
+            "VALUES ('b', 100, '/tmp/b.mp3', CURRENT_TIMESTAMP)"
+        )
+        conn.commit()
+
+    assert queue.get_next_sound(db_path, exclude_used_within_days=3) is None
+
+
+def test_attach_sound_to_clip_sets_both_rows(db_path: Path) -> None:
+    """attach_sound_to_clip sets clips.sound_id and stamps sounds.last_used_at."""
+    with sqlite3_connect(db_path) as conn:
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        clip_id = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path) "
+            "VALUES (?, 'pending', 'r.webm')",
+            (site_id,),
+        ).lastrowid
+        sound_id = conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, audio_path) VALUES ('s1', '/tmp/s1.mp3')"
+        ).lastrowid
+        conn.commit()
+
+    queue.attach_sound_to_clip(db_path, clip_id, sound_id)
+    with sqlite3_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        clip = conn.execute("SELECT sound_id FROM clips WHERE id=?", (clip_id,)).fetchone()
+        sound = conn.execute("SELECT last_used_at FROM sounds WHERE id=?", (sound_id,)).fetchone()
+    assert clip["sound_id"] == sound_id
+    assert sound["last_used_at"] is not None
+
+
+def test_mark_clip_needs_attention_updates_status(db_path: Path) -> None:
+    """The clip's status moves to 'needs_attention'."""
+    with sqlite3_connect(db_path) as conn:
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        clip_id = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, caption) "
+            "VALUES (?, 'pending', 'r.webm', 'cap')",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    queue.mark_clip_needs_attention(db_path, clip_id)
+    with sqlite3_connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT status FROM clips WHERE id=?", (clip_id,)).fetchone()
+    assert row["status"] == "needs_attention"
+
+
+def test_get_clips_needing_sound_filters_correctly(db_path: Path) -> None:
+    """Returns only pending clips with caption + recording, no sound yet."""
+    with sqlite3_connect(db_path) as conn:
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        sound_id = conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id) VALUES ('s1')"
+        ).lastrowid
+        # 1: pending, no sound, has caption + recording → should be picked
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, caption, sound_id) "
+            "VALUES (?, 'pending', 'r.webm', 'cap', NULL)",
+            (site_id,),
+        ).lastrowid
+        # 2: pending, has sound → skip
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, caption, sound_id) "
+            "VALUES (?, 'pending', 'r.webm', 'cap', ?)",
+            (site_id, sound_id),
+        ).lastrowid
+        # 3: pending, no caption → skip (captioner hasn't run)
+        c = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, sound_id) "
+            "VALUES (?, 'pending', 'r.webm', NULL)",
+            (site_id,),
+        ).lastrowid
+        # 4: needs_attention → skip
+        d = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, caption, sound_id) "
+            "VALUES (?, 'needs_attention', 'r.webm', 'cap', NULL)",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    rows = queue.get_clips_needing_sound(db_path)
+    ids = [r.id for r in rows]
+    assert ids == [a]

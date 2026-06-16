@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .db import get_connection
-from .models import Clip, Posting
+from .models import Clip, Posting, Sound
 
 
 def _row_to_clip(row: sqlite3.Row) -> Clip:
@@ -378,3 +378,85 @@ def upsert_sound(
         )
         row = cur.fetchone()
         return row[0] if row else 0
+
+
+def count_sounds(db_path: Path) -> int:
+    """Total sounds in the catalog."""
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM sounds").fetchone()
+    return int(row["n"])
+
+
+def get_next_sound(
+    db_path: Path, *, exclude_used_within_days: int = 3
+) -> Sound | None:
+    """Return the highest-trending sound not used in the last N days.
+
+    Skips sounds with NULL audio_path (not yet downloaded). Returns
+    None if no candidate. Ordered by trending_score DESC, then
+    fetched_at DESC.
+    """
+    sql = (
+        "SELECT * FROM sounds "
+        "WHERE audio_path IS NOT NULL "
+        "AND (last_used_at IS NULL "
+        "     OR last_used_at < datetime('now', ?)) "
+        "ORDER BY trending_score DESC, fetched_at DESC "
+        "LIMIT 1"
+    )
+    days_modifier = f"-{exclude_used_within_days} days"
+    with get_connection(db_path) as conn:
+        row = conn.execute(sql, (days_modifier,)).fetchone()
+    if row is None:
+        return None
+    return Sound(
+        id=row["id"],
+        tiktok_sound_id=row["tiktok_sound_id"],
+        title=row["title"],
+        artist=row["artist"],
+        audio_path=row["audio_path"],
+        trending_score=row["trending_score"],
+        fetched_at=row["fetched_at"],
+        last_used_at=row["last_used_at"],
+    )
+
+
+def attach_sound_to_clip(db_path: Path, clip_id: int, sound_id: int) -> None:
+    """Link a sound to a clip and stamp the sound's last_used_at."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE clips SET sound_id=? WHERE id=?",
+            (sound_id, clip_id),
+        )
+        conn.execute(
+            "UPDATE sounds SET last_used_at=CURRENT_TIMESTAMP WHERE id=?",
+            (sound_id,),
+        )
+
+
+def mark_clip_needs_attention(db_path: Path, clip_id: int) -> None:
+    """Mark an existing clip's status as 'needs_attention' (no sound available)."""
+    with get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE clips SET status='needs_attention', last_attempted=CURRENT_TIMESTAMP "
+            "WHERE id=?",
+            (clip_id,),
+        )
+
+
+def get_clips_needing_sound(db_path: Path) -> list[Clip]:
+    """Pending clips with caption + recording, no sound yet — the pick step.
+
+    These are clips the captioner has finished; the composer hasn't
+    picked them up yet; the sound hasn't been attached.
+    """
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM clips "
+            "WHERE status='pending' "
+            "AND sound_id IS NULL "
+            "AND recording_path IS NOT NULL "
+            "AND caption IS NOT NULL "
+            "ORDER BY created_at ASC"
+        ).fetchall()
+    return [_row_to_clip(r) for r in rows]

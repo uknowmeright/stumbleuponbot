@@ -25,6 +25,9 @@ $EDITOR .env
 
 # 5. Install ffmpeg system-wide (one-time)
 brew install ffmpeg  # macOS; for Linux: apt-get install ffmpeg
+
+# 6. Install yt-dlp (one-time; downloads TikTok audio tracks)
+.venv/bin/pip install "yt-dlp>=2024.4.0"
 ```
 
 Python 3.11+ is required (per `pyproject.toml`). The setup above was verified on Python 3.14.5 (Homebrew).
@@ -59,7 +62,8 @@ src/stumbleupon/
 ├── queue.py     # The only module that mutates clips.status
 ├── recorder.py  # 30s vertical video clips via Playwright
 ├── reviewer.py  # human-in-the-loop CLI for clip approval
-└── scraper.py   # stumbleupon.cc → fresh sites (Supabase API)
+├── scraper.py   # stumbleupon.cc → fresh sites (Supabase API)
+└── sounds.py    # Trending TikTok sounds catalog + download
 ```
 
 ## Roadmap
@@ -68,7 +72,7 @@ This plan covers the scaffold. Future plans:
 - Scraper (stumbleupon.cc crawl) — done (now uses Supabase API)
 - Recorder (Playwright 30s vertical video) — done
 - Captioner (Claude + tone guide) — done
-- Sounds (TikTok trending scrape)
+- Sounds (TikTok trending scrape) — done
 - Composer (ffmpeg) — done
 - Reviewer (CLI) — done
 - Poster (Buffer + R2) — done

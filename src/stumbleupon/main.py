@@ -44,6 +44,29 @@ def cmd_run(args: argparse.Namespace) -> int:
     ))
     print(f"captioner: {len(clips)} clips queued for review", file=sys.stderr)
 
+    # Step 4: pick a trending sound for each pending clip
+    from . import queue as q
+
+    pending_for_sound = q.get_clips_needing_sound(db_path)
+    sounds_attached = 0
+    for clip in pending_for_sound:
+        sound = q.get_next_sound(db_path)
+        if sound is None:
+            q.mark_clip_needs_attention(db_path, clip.id)
+            print(
+                f"sounds: clip {clip.id} marked needs_attention (no sound available)",
+                file=sys.stderr,
+            )
+        else:
+            q.attach_sound_to_clip(db_path, clip.id, sound.id)
+            sounds_attached += 1
+    print(
+        f"sounds: {sounds_attached} sounds attached, "
+        f"{len(pending_for_sound) - sounds_attached} marked needs_attention",
+        file=sys.stderr,
+    )
+
+
     finals_dir = db_path.parent / "final"
     finals_dir.mkdir(parents=True, exist_ok=True)
     composed = compose_pending_clips(
@@ -97,7 +120,23 @@ def cmd_post(args: argparse.Namespace) -> int:
 
 
 def cmd_scrape_sounds(args: argparse.Namespace) -> int:
-    print("scrape-sounds: not yet implemented (scaffold plan)", file=sys.stderr)
+    """Refresh the trending TikTok sounds catalog."""
+    from pathlib import Path
+
+    from .config import load_settings
+    from .db import init_db
+    from .sounds import refresh_catalog
+
+    db_path = Path("data/stumbleupon.db")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    init_db(db_path)
+
+    settings = load_settings()  # currently unused; reserved for future proxy config
+    audio_dir = db_path.parent / "sounds"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    count = refresh_catalog(db_path=db_path, audio_dir=audio_dir, limit=10)
+    print(f"sounds: {count} sounds refreshed in {audio_dir}", file=sys.stderr)
     return 0
 
 
