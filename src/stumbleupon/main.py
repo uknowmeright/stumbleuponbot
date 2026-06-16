@@ -5,6 +5,34 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path as _Path
+
+from . import queue as _queue
+from .models import Clip as _Clip, Sound as _Sound
+
+
+def attach_sounds_to_pending_clips(
+    db_path: _Path,
+    pending_for_sound: list[_Clip],
+    sounds_batch: list[_Sound],
+) -> int:
+    """Attach a sound to each pending clip, or mark `needs_attention` if none left.
+
+    Pairwise by index. Returns the count of clips that received a sound.
+    """
+    sounds_attached = 0
+    for i, clip in enumerate(pending_for_sound):
+        if i < len(sounds_batch):
+            sound = sounds_batch[i]
+            _queue.attach_sound_to_clip(db_path, clip.id, sound.id)
+            sounds_attached += 1
+        else:
+            _queue.mark_clip_needs_attention(db_path, clip.id)
+            print(
+                f"sounds: clip {clip.id} marked needs_attention (no sound available)",
+                file=sys.stderr,
+            )
+    return sounds_attached
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -53,17 +81,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     # earlier picks as recently-used and starving later clips in the
     # same run.
     sounds_batch = q.get_next_sounds(db_path, limit=len(pending_for_sound))
-    sounds_attached = 0
-    for clip, sound in zip(pending_for_sound, sounds_batch):
-        if sound is None:
-            q.mark_clip_needs_attention(db_path, clip.id)
-            print(
-                f"sounds: clip {clip.id} marked needs_attention (no sound available)",
-                file=sys.stderr,
-            )
-        else:
-            q.attach_sound_to_clip(db_path, clip.id, sound.id)
-            sounds_attached += 1
+    sounds_attached = attach_sounds_to_pending_clips(
+        db_path, pending_for_sound, sounds_batch,
+    )
     print(
         f"sounds: {sounds_attached} sounds attached, "
         f"{len(pending_for_sound) - sounds_attached} marked needs_attention",
