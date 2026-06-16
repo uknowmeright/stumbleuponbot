@@ -97,6 +97,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
+    if clips:
+        from .notifier import notify
+        notify("stumbleupon", f"{len(clips)} new clips ready to review")
 
     finals_dir = db_path.parent / "final"
     finals_dir.mkdir(parents=True, exist_ok=True)
@@ -147,6 +150,12 @@ def cmd_post(args: argparse.Namespace) -> int:
         db_path=db_path, settings=settings, finals_dir=finals_dir, limit=5,
     ))
     print(f"poster: {len(posted)} clips posted", file=sys.stderr)
+
+    from .notifier import notify
+    if posted:
+        notify("stumbleupon", f"Posted {len(posted)} clip(s)")
+    else:
+        notify("stumbleupon", "No clips to post (or all failed)", sound="Basso")
     return 0
 
 
