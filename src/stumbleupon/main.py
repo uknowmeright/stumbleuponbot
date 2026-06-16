@@ -48,9 +48,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     from . import queue as q
 
     pending_for_sound = q.get_clips_needing_sound(db_path)
+    # Pick the batch up front (not one-at-a-time) so we don't fall
+    # victim to the `last_used_at < now - 3 days` filter stamping
+    # earlier picks as recently-used and starving later clips in the
+    # same run.
+    sounds_batch = q.get_next_sounds(db_path, limit=len(pending_for_sound))
     sounds_attached = 0
-    for clip in pending_for_sound:
-        sound = q.get_next_sound(db_path)
+    for clip, sound in zip(pending_for_sound, sounds_batch):
         if sound is None:
             q.mark_clip_needs_attention(db_path, clip.id)
             print(

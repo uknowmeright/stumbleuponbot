@@ -250,13 +250,19 @@ def get_clips_to_compose(db_path: Path, limit: int | None = None) -> list[sqlite
     These are the clips the composer should process. Already-composed
     clips (final_path set) and clips without a recording (captioner
     hasn't run yet) are excluded.
+
+    LEFT JOINs `sounds` to expose `sounds.audio_path` (aliased as
+    `sound_audio_path`) so the composer can mix in audio. The column
+    is NULL when the clip has no `sound_id` attached yet.
     """
     sql = (
-        "SELECT * FROM clips "
-        "WHERE status='pending' "
-        "AND recording_path IS NOT NULL "
-        "AND final_path IS NULL "
-        "ORDER BY created_at ASC"
+        "SELECT clips.*, sounds.audio_path AS sound_audio_path "
+        "FROM clips "
+        "LEFT JOIN sounds ON sounds.id = clips.sound_id "
+        "WHERE clips.status='pending' "
+        "AND clips.recording_path IS NOT NULL "
+        "AND clips.final_path IS NULL "
+        "ORDER BY clips.created_at ASC"
     )
     if limit is not None:
         sql += " LIMIT ?"
@@ -387,14 +393,17 @@ def count_sounds(db_path: Path) -> int:
     return int(row["n"])
 
 
-def get_next_sound(
-    db_path: Path, *, exclude_used_within_days: int = 3
-) -> Sound | None:
-    """Return the highest-trending sound not used in the last N days.
+def get_next_sounds(
+    db_path: Path,
+    limit: int,
+    *,
+    exclude_used_within_days: int = 3,
+) -> list[Sound]:
+    """Return up to `limit` highest-trending sounds not used in the last N days.
 
-    Skips sounds with NULL audio_path (not yet downloaded). Returns
-    None if no candidate. Ordered by trending_score DESC, then
-    fetched_at DESC.
+    Skips sounds with NULL audio_path (not yet downloaded). Ordered by
+    trending_score DESC, then fetched_at DESC. Returns an empty list
+    when the catalog has no eligible sounds (or fewer than `limit`).
     """
     sql = (
         "SELECT * FROM sounds "
@@ -402,23 +411,39 @@ def get_next_sound(
         "AND (last_used_at IS NULL "
         "     OR last_used_at < datetime('now', ?)) "
         "ORDER BY trending_score DESC, fetched_at DESC "
-        "LIMIT 1"
+        "LIMIT ?"
     )
     days_modifier = f"-{exclude_used_within_days} days"
     with get_connection(db_path) as conn:
-        row = conn.execute(sql, (days_modifier,)).fetchone()
-    if row is None:
-        return None
-    return Sound(
-        id=row["id"],
-        tiktok_sound_id=row["tiktok_sound_id"],
-        title=row["title"],
-        artist=row["artist"],
-        audio_path=row["audio_path"],
-        trending_score=row["trending_score"],
-        fetched_at=row["fetched_at"],
-        last_used_at=row["last_used_at"],
-    )
+        rows = conn.execute(sql, (days_modifier, limit)).fetchall()
+    return [
+        Sound(
+            id=row["id"],
+            tiktok_sound_id=row["tiktok_sound_id"],
+            title=row["title"],
+            artist=row["artist"],
+            audio_path=row["audio_path"],
+            trending_score=row["trending_score"],
+            fetched_at=row["fetched_at"],
+            last_used_at=row["last_used_at"],
+        )
+        for row in rows
+    ]
+
+
+def get_next_sound(
+    db_path: Path, *, exclude_used_within_days: int = 3
+) -> Sound | None:
+    """Return the highest-trending sound not used in the last N days.
+
+    Convenience wrapper around `get_next_sounds(limit=1)`. Returns
+    None when no candidate exists. Callers that need a batch of
+    sounds (e.g., one per pending clip in `cmd_run`) should call
+    `get_next_sounds` directly to avoid the racy "stamp last_used_at
+    after each pick" behavior.
+    """
+    sounds = get_next_sounds(db_path, limit=1, exclude_used_within_days=exclude_used_within_days)
+    return sounds[0] if sounds else None
 
 
 def attach_sound_to_clip(db_path: Path, clip_id: int, sound_id: int) -> None:

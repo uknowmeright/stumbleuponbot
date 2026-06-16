@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from stumbleupon.db import init_db
-from stumbleupon.models import Clip, Site
+from stumbleupon.models import Clip, Site, Sound
 from stumbleupon import queue
 
 
@@ -394,6 +394,67 @@ def test_get_clips_to_compose_respects_limit(db_path: Path) -> None:
     assert len(rows) == 2
 
 
+def test_get_clips_to_compose_includes_sound_audio_path_via_left_join(db_path: Path) -> None:
+    """Each row exposes the joined `sounds.audio_path` as `sound_audio_path`.
+
+    Clips with a `sound_id` set should carry the matching sound's
+    audio_path; clips without should expose NULL.
+    """
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        site_id = conn.execute("INSERT INTO sites (url) VALUES ('https://x.com')").lastrowid
+        # Sound with audio_path
+        s1 = conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, audio_path) VALUES ('s1', '/tmp/s1.mp3')"
+        ).lastrowid
+        # Sound with audio_path
+        s2 = conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, audio_path) VALUES ('s2', '/tmp/s2.mp3')"
+        ).lastrowid
+        # Sound with NULL audio_path (still LEFT JOINs; the join is by id, not audio_path)
+        s3 = conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, audio_path) VALUES ('s3', NULL)"
+        ).lastrowid
+        # Clip with sound s1
+        a = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, sound_id) "
+            "VALUES (?, 'pending', 'data/recordings/1.webm', ?)",
+            (site_id, s1),
+        ).lastrowid
+        # Clip with sound s2
+        b = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, sound_id) "
+            "VALUES (?, 'pending', 'data/recordings/2.webm', ?)",
+            (site_id, s2),
+        ).lastrowid
+        # Clip with sound that has no audio_path — still LEFT JOINs but
+        # the audio_path column itself is NULL
+        c = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, sound_id) "
+            "VALUES (?, 'pending', 'data/recordings/3.webm', ?)",
+            (site_id, s3),
+        ).lastrowid
+        # Clip with no sound attached — should still appear with NULL sound_audio_path
+        d = conn.execute(
+            "INSERT INTO clips (site_id, status, recording_path, sound_id) "
+            "VALUES (?, 'pending', 'data/recordings/4.webm', NULL)",
+            (site_id,),
+        ).lastrowid
+        conn.commit()
+
+    rows = queue.get_clips_to_compose(db_path)
+    by_id = {r["id"]: r for r in rows}
+    assert set(by_id.keys()) == {a, b, c, d}
+    assert by_id[a]["sound_audio_path"] == "/tmp/s1.mp3"
+    assert by_id[b]["sound_audio_path"] == "/tmp/s2.mp3"
+    assert by_id[c]["sound_audio_path"] is None  # joined row's audio_path is NULL
+    assert by_id[d]["sound_audio_path"] is None  # no sound_id, no join match
+    # All clips columns still present (we did clips.*)
+    assert by_id[a]["recording_path"] == "data/recordings/1.webm"
+    assert by_id[a]["status"] == "pending"
+
+
 def test_mark_clip_composed_sets_final_path(db_path: Path) -> None:
     import sqlite3
     with sqlite3.connect(db_path) as conn:
@@ -587,6 +648,108 @@ def test_get_next_sound_returns_none_when_all_recently_used(db_path: Path) -> No
         conn.commit()
 
     assert queue.get_next_sound(db_path, exclude_used_within_days=3) is None
+
+
+def test_get_next_sounds_returns_up_to_limit(db_path: Path) -> None:
+    """get_next_sounds returns at most `limit` sounds."""
+    with sqlite3_connect(db_path) as conn:
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+                "VALUES (?, ?, ?)",
+                (f"s{i}", float(100 - i), f"/tmp/s{i}.mp3"),
+            )
+        conn.commit()
+
+    sounds = queue.get_next_sounds(db_path, limit=3)
+    assert len(sounds) == 3
+    assert all(isinstance(s, Sound) for s in sounds)
+
+
+def test_get_next_sounds_ordered_by_trending_score_desc(db_path: Path) -> None:
+    """Results are ordered by trending_score DESC (then fetched_at DESC)."""
+    with sqlite3_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('a', 100, '/tmp/a.mp3')"
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('b', 500, '/tmp/b.mp3')"
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('c', 250, '/tmp/c.mp3')"
+        )
+        conn.commit()
+
+    sounds = queue.get_next_sounds(db_path, limit=3)
+    assert [s.tiktok_sound_id for s in sounds] == ["b", "c", "a"]
+
+
+def test_get_next_sounds_skips_sounds_without_audio(db_path: Path) -> None:
+    """Sounds with NULL audio_path are unusable; skip them."""
+    with sqlite3_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('a', 999, NULL)"  # highest score but no audio
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('b', 100, '/tmp/b.mp3')"
+        )
+        conn.commit()
+
+    sounds = queue.get_next_sounds(db_path, limit=3)
+    assert [s.tiktok_sound_id for s in sounds] == ["b"]
+
+
+def test_get_next_sounds_excludes_recently_used(db_path: Path) -> None:
+    """A sound used in the last 3 days should be excluded from the batch."""
+    with sqlite3_connect(db_path) as conn:
+        # 'a' was used today
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path, last_used_at) "
+            "VALUES ('a', 999, '/tmp/a.mp3', CURRENT_TIMESTAMP)"
+        )
+        # 'b' is fresh
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path, last_used_at) "
+            "VALUES ('b', 100, '/tmp/b.mp3', NULL)"
+        )
+        conn.commit()
+
+    sounds = queue.get_next_sounds(db_path, limit=3, exclude_used_within_days=3)
+    assert [s.tiktok_sound_id for s in sounds] == ["b"]
+
+
+def test_get_next_sounds_returns_empty_when_no_candidates(db_path: Path) -> None:
+    """No eligible sounds → empty list (caller marks clip needs_attention)."""
+    with sqlite3_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path, last_used_at) "
+            "VALUES ('a', 999, '/tmp/a.mp3', CURRENT_TIMESTAMP)"
+        )
+        conn.commit()
+
+    assert queue.get_next_sounds(db_path, limit=5) == []
+
+
+def test_get_next_sounds_returns_all_when_under_limit(db_path: Path) -> None:
+    """When fewer eligible sounds exist than the limit, return all of them."""
+    with sqlite3_connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('a', 100, '/tmp/a.mp3')"
+        )
+        conn.execute(
+            "INSERT INTO sounds (tiktok_sound_id, trending_score, audio_path) "
+            "VALUES ('b', 50, '/tmp/b.mp3')"
+        )
+        conn.commit()
+
+    sounds = queue.get_next_sounds(db_path, limit=10)
+    assert len(sounds) == 2
 
 
 def test_attach_sound_to_clip_sets_both_rows(db_path: Path) -> None:

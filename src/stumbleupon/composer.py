@@ -104,6 +104,12 @@ def compose_pending_clips(
 ) -> list[dict]:
     """For each clip that has a recording but no final mp4, run the composer.
 
+    If the caller passes a `sound_path`, that sound is used for every
+    clip (legacy / single-sound batch mode). Otherwise, the function
+    reads `sounds.audio_path` (LEFT JOINed by `get_clips_to_compose`) for
+    each clip and passes it through to `compose_clip` — a clip with no
+    `sound_id` set gets `sound_path=None` and produces a silent mp4.
+
     Returns a list of {clip_id, final_path, recording_path} dicts for the
     clips that were successfully composed. Per-clip failures are caught:
     the parent site is marked 'failed' in the DB and the batch continues.
@@ -119,11 +125,19 @@ def compose_pending_clips(
         recording_path = Path(row["recording_path"])
         output_path = resolve_output_path(finals_dir, clip_id)
 
+        # Per-clip sound: prefer the row's sound_audio_path (set via LEFT
+        # JOIN from clips.sound_id -> sounds.audio_path). Fall back to the
+        # caller's override `sound_path` if the row has none.
+        row_sound = row["sound_audio_path"]
+        effective_sound_path = sound_path if sound_path is not None else row_sound
+        if effective_sound_path is not None:
+            effective_sound_path = Path(effective_sound_path)
+
         try:
             compose_clip(
                 recording_path=recording_path,
                 output_path=output_path,
-                sound_path=sound_path,
+                sound_path=effective_sound_path,
                 duration_sec=duration_sec,
             )
         except Exception as exc:
