@@ -267,7 +267,7 @@ async def test_scrape_orchestrator_wires_fetch_filter_dedup_insert(tmp_path: Pat
     settings = Settings(
         anthropic_api_key="x", buffer_api_key="y",
         r2_access_key_id="a", r2_secret_access_key="b",
-        r2_bucket_name="c", r2_public_url_base="d",
+        r2_bucket_name="c", r2_endpoint_url="e", r2_public_url_base="d",
         stumbleupon_api_key="test-key",
         ad_block_keywords=["nsfw"],
     )

@@ -83,3 +83,106 @@ def test_notify_does_not_raise_on_osascript_failure(
 
     monkeypatch.setattr(notifier.subprocess, "run", fake_run)
     notifier.notify("Title", "Body")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# AppleScript escaping (regression for unescaped-quote crash)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_escapes_double_quotes_in_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A title containing `"` must not close the AppleScript string literal
+    prematurely and inject the rest of the title as a bare token."""
+    monkeypatch.setattr(notifier.sys, "platform", "darwin")
+
+    called: dict = {}
+
+    def fake_run(argv, **kwargs):
+        called["script"] = argv[2]
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(notifier.subprocess, "run", fake_run)
+
+    notifier.notify('He said "hi"', "body text")
+
+    script = called["script"]
+    # The unescaped quote must NOT appear next to the closing of the
+    # title literal — that would mean AppleScript sees two adjacent
+    # string literals and parses "hi" as a bare token.
+    assert 'title "He said \\"hi\\""' in script
+
+
+def test_notify_escapes_double_quotes_in_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(notifier.sys, "platform", "darwin")
+
+    called: dict = {}
+
+    def fake_run(argv, **kwargs):
+        called["script"] = argv[2]
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(notifier.subprocess, "run", fake_run)
+
+    notifier.notify("Title", 'Status: "OK"')
+
+    script = called["script"]
+    assert 'notification "Status: \\"OK\\""' in script
+
+
+def test_notify_escapes_backslashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backslashes must be doubled so a literal backslash survives AppleScript parsing."""
+    monkeypatch.setattr(notifier.sys, "platform", "darwin")
+
+    called: dict = {}
+
+    def fake_run(argv, **kwargs):
+        called["script"] = argv[2]
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(notifier.subprocess, "run", fake_run)
+
+    notifier.notify(r"Path: C:\Users\you", "body")
+
+    script = called["script"]
+    # AppleScript will collapse \\ -> \, so the actual string on the
+    # receiving end is the original "Path: C:\Users\you".
+    assert 'title "Path: C:\\\\Users\\\\you"' in script
+
+
+def test_notify_escaping_produces_well_formed_applescript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A title with both quotes and backslashes should still produce a
+    single, parseable AppleScript literal — no early terminator."""
+    monkeypatch.setattr(notifier.sys, "platform", "darwin")
+
+    called: dict = {}
+
+    def fake_run(argv, **kwargs):
+        called["script"] = argv[2]
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(notifier.subprocess, "run", fake_run)
+
+    # Tricky string: a backslash followed by a quote. After escaping it
+    # becomes `\\\"` (3 chars: backslash, backslash, backslash, quote).
+    notifier.notify(r'she said "hi" \o/', "body")
+
+    script = called["script"]
+    # No premature terminator: the substring after the title literal
+    # should be the next AppleScript keyword, not raw input text.
+    assert 'with title "she said \\"hi\\" \\\\o/"' in script
+
+
+def test_escape_applescript_string_unit() -> None:
+    """The escape helper is the unit; verify it in isolation."""
+    assert notifier._escape_applescript_string("plain") == "plain"
+    assert notifier._escape_applescript_string('a"b') == 'a\\"b'
+    assert notifier._escape_applescript_string("a\\b") == "a\\\\b"
+    assert notifier._escape_applescript_string(r'a\"b') == 'a\\\\\\"b'

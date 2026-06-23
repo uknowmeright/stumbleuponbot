@@ -6,6 +6,17 @@ A local TikTok pipeline for the weird web. Scrapes `stumbleupon.cc`, records sho
 
 ## Setup
 
+The fastest path is the bootstrap script — it does steps 1-5 below in one shot and is safe to re-run:
+
+```bash
+./scripts/setup.sh          # interactive (asks before opening $EDITOR)
+./scripts/setup.sh --yes    # non-interactive (no editor prompt)
+```
+
+The script skips any step that's already done, checks for `ffmpeg` (and tells you the right install command for your platform), copies `.env.example` to `.env` if missing, and finishes with `show-config` so you can see what's still unset.
+
+### Manual setup (the long form)
+
 ```bash
 # 1. Create a venv and install the package (editable, with dev extras)
 python3 -m venv .venv
@@ -25,9 +36,6 @@ $EDITOR .env
 
 # 5. Install ffmpeg system-wide (one-time)
 brew install ffmpeg  # macOS; for Linux: apt-get install ffmpeg
-
-# 6. Install yt-dlp (one-time; downloads TikTok audio tracks)
-.venv/bin/pip install "yt-dlp>=2024.4.0"
 ```
 
 Python 3.11+ is required (per `pyproject.toml`). The setup above was verified on Python 3.14.5 (Homebrew).

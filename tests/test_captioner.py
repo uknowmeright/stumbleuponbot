@@ -161,7 +161,7 @@ async def test_generate_caption_calls_anthropic_and_returns_payload() -> None:
     settings = Settings(
         anthropic_api_key="test-key", buffer_api_key="y",
         r2_access_key_id="a", r2_secret_access_key="b",
-        r2_bucket_name="c", r2_public_url_base="d",
+        r2_bucket_name="c", r2_endpoint_url="e", r2_public_url_base="d",
     )
 
     with patch("stumbleupon.captioner.anthropic.AsyncAnthropic", return_value=mock_client):
@@ -209,7 +209,7 @@ def test_caption_pending_recordings_writes_clips_to_db(tmp_path: Path, monkeypat
     settings = Settings(
         anthropic_api_key="x", buffer_api_key="y",
         r2_access_key_id="a", r2_secret_access_key="b",
-        r2_bucket_name="c", r2_public_url_base="d",
+        r2_bucket_name="c", r2_endpoint_url="e", r2_public_url_base="d",
     )
 
     results = asyncio.run(captioner.caption_pending_recordings(
@@ -264,7 +264,7 @@ def test_caption_pending_recordings_handles_per_site_failures(tmp_path: Path, mo
     settings = Settings(
         anthropic_api_key="x", buffer_api_key="y",
         r2_access_key_id="a", r2_secret_access_key="b",
-        r2_bucket_name="c", r2_public_url_base="d",
+        r2_bucket_name="c", r2_endpoint_url="e", r2_public_url_base="d",
     )
 
     results = asyncio.run(captioner.caption_pending_recordings(

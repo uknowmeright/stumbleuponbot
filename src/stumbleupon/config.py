@@ -19,6 +19,7 @@ class Settings:
     r2_access_key_id: str
     r2_secret_access_key: str
     r2_bucket_name: str
+    r2_endpoint_url: str
     r2_public_url_base: str
     ad_block_keywords: list[str] = field(default_factory=lambda: ["nsfw", "adult", "xxx", "porn"])
     pipeline_daily_runs: int = 2
@@ -48,6 +49,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         r2_access_key_id=sources.get("R2_ACCESS_KEY_ID", "") or "",
         r2_secret_access_key=sources.get("R2_SECRET_ACCESS_KEY", "") or "",
         r2_bucket_name=sources.get("R2_BUCKET_NAME", "") or "",
+        r2_endpoint_url=sources.get("R2_ENDPOINT_URL", "") or "",
         r2_public_url_base=sources.get("R2_PUBLIC_URL_BASE", "") or "",
         ad_block_keywords=_split_csv(sources.get("AD_BLOCK_KEYWORDS")) or ["nsfw", "adult", "xxx", "porn"],
         pipeline_daily_runs=int(sources.get("PIPELINE_DAILY_RUNS", "2")),

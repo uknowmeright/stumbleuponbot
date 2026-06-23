@@ -70,11 +70,27 @@ def upload_to_r2(
 
     Uses boto3 with the S3 client (R2 is S3-compatible). The object key
     is `<clip_id>.mp4`. The returned URL is `<public_url_base>/<key>`.
+
+    `R2_ENDPOINT_URL` and `R2_PUBLIC_URL_BASE` are distinct settings:
+    the endpoint is the S3-compatible API host (e.g.
+    `https://<account>.r2.cloudflarestorage.com`); the public URL base
+    is the CDN host where files are served (e.g.
+    `https://media.example.com`). Mixing them up was a real v1 bug.
     """
     mp4_path = Path(mp4_path)
+    if not settings.r2_endpoint_url:
+        raise RuntimeError(
+            "R2_ENDPOINT_URL is not set. Add it to your .env — see .env.example "
+            "for the value to copy from the Cloudflare dashboard."
+        )
+    if not settings.r2_public_url_base:
+        raise RuntimeError(
+            "R2_PUBLIC_URL_BASE is not set. Add it to your .env — this is the "
+            "public CDN URL where uploaded clips are served."
+        )
     s3 = boto3.client(
         "s3",
-        endpoint_url=settings.r2_public_url_base,  # R2 endpoint
+        endpoint_url=settings.r2_endpoint_url,
         aws_access_key_id=settings.r2_access_key_id,
         aws_secret_access_key=settings.r2_secret_access_key,
     )

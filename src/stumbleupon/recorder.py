@@ -75,6 +75,33 @@ def generate_scroll_events(
     return events
 
 
+# Init script injected into every page on the recording context. It mutes
+# every <audio>/<video> as soon as the DOM is ready AND any time a new
+# media element is added (MutationObserver). This catches:
+#   - media in the initial HTML (DOMContentLoaded path)
+#   - media injected later by JS (autoplay popups, ad iframes, etc.)
+#
+# It must be installed via `context.add_init_script(...)` BEFORE the page
+# is navigated, so the script runs at document_start. Running it via
+# `page.evaluate(...)` after navigation is too late — between goto and
+# eval, autoplay media has already produced sound.
+_MUTE_PAGE_SCRIPT = """
+() => {
+  const mute = () => {
+    document.querySelectorAll('audio,video').forEach(el => { el.muted = true; });
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mute);
+  } else {
+    mute();
+  }
+  new MutationObserver(mute).observe(document.documentElement, {
+    childList: true, subtree: true,
+  });
+}
+"""
+
+
 def record_site(
     site_url: str,
     output_path: Path,
@@ -109,9 +136,11 @@ def record_site(
                 record_video_dir=str(tmp_dir),
                 record_video_size={"width": viewport[0], "height": viewport[1]},
             )
+            # Mute all media on every page BEFORE any navigation. The
+            # init script runs at document_start on each new document, so
+            # auto-playing audio/video is muted before it produces sound.
+            context.add_init_script(_MUTE_PAGE_SCRIPT)
             page = context.new_page()
-            # Mute the tab so the site's audio isn't captured
-            page.evaluate("() => { document.querySelectorAll('audio,video').forEach(el => el.muted = true); }")
             page.goto(site_url, wait_until="domcontentloaded", timeout=10000)
 
             # Replay the mouse path and scroll events on a timeline

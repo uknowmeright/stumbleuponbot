@@ -16,12 +16,14 @@ def test_load_settings_reads_required_keys(tmp_path: Path, monkeypatch: pytest.M
         "R2_ACCESS_KEY_ID=r2ak\n"
         "R2_SECRET_ACCESS_KEY=r2sk\n"
         "R2_BUCKET_NAME=stumble\n"
+        "R2_ENDPOINT_URL=https://account.r2.cloudflarestorage.com\n"
         "R2_PUBLIC_URL_BASE=https://media.example.com\n"
     )
     settings = load_settings(env_file=env_file)
     assert settings.anthropic_api_key == "sk-test"
     assert settings.buffer_api_key == "buf-test"
     assert settings.r2_bucket_name == "stumble"
+    assert settings.r2_endpoint_url == "https://account.r2.cloudflarestorage.com"
     assert settings.r2_public_url_base == "https://media.example.com"
 
 
@@ -61,6 +63,7 @@ def test_settings_is_immutable() -> None:
         r2_access_key_id="a",
         r2_secret_access_key="b",
         r2_bucket_name="c",
+        r2_endpoint_url="https://account.r2.cloudflarestorage.com",
         r2_public_url_base="d",
     )
     with pytest.raises(Exception):  # FrozenInstanceError subclass

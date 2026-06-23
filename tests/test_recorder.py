@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -167,3 +168,113 @@ def test_record_pending_sites_marks_failures_without_crashing(tmp_path: Path, mo
     assert rows["https://a.com"][0] == "recorded"
     assert rows["https://b.com"][0] == "failed"
     assert "playwright crashed" in rows["https://b.com"][1]
+
+
+# ---------------------------------------------------------------------------
+# record_site: mute script is wired up via add_init_script (regression)
+# ---------------------------------------------------------------------------
+
+
+def test_mute_page_script_mutes_audio_and_video() -> None:
+    """The init script must mute both <audio> and <video> elements, and
+    must cover both initial-load and dynamically-injected media."""
+    script = recorder._MUTE_PAGE_SCRIPT
+    assert "querySelectorAll" in script
+    # The selector is a CSS selector list like 'audio,video' (comma, no
+    # space) — a single string passed to querySelectorAll. Both element
+    # types must be referenced.
+    assert "audio" in script
+    assert "video" in script
+    assert "muted = true" in script
+    # DOMContentLoaded catches initial-load media; MutationObserver catches
+    # media injected later by the page's own JS (autoplay popups, etc.).
+    assert "DOMContentLoaded" in script
+    assert "MutationObserver" in script
+
+
+def test_record_site_installs_mute_script_via_add_init_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_site must register the mute script on the browser context
+    BEFORE navigating to the target URL.
+
+    Regression: v1 called `page.evaluate(...)` BEFORE `page.goto(...)`.
+    That runs on about:blank (no audio/video elements exist), so the
+    eval was a no-op. The site's actual autoplay audio leaked into the
+    recording. The fix is `context.add_init_script(...)`, which runs
+    at document_start on every navigation.
+    """
+    output_path = tmp_path / "out.webm"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Pre-create the output so the post-recording rename succeeds.
+    output_path.write_bytes(b"fake webm")
+
+    # Build the Playwright object graph as a chain of MagicMocks.
+    page = MagicMock()
+    context = MagicMock()
+    context.new_page.return_value = page
+    browser = MagicMock()
+    browser.new_context.return_value = context
+    chromium = MagicMock()
+    chromium.launch.return_value = browser
+    p = MagicMock()
+    p.chromium = chromium
+
+    # sync_playwright() is used as a context manager.
+    pw_cm = MagicMock()
+    pw_cm.__enter__ = MagicMock(return_value=p)
+    pw_cm.__exit__ = MagicMock(return_value=False)
+    monkeypatch.setattr(recorder, "sync_playwright", lambda: pw_cm)
+
+    # page.evaluate("() => performance.now()") is used to read the page's
+    # clock for the mouse/scroll timeline. Return 0 so the timeline math
+    # is well-defined.
+    page.evaluate.return_value = 0
+
+    # Empty mouse + scroll paths so the recording loop is a no-op;
+    # the test only cares about the setup steps.
+    monkeypatch.setattr(recorder, "generate_mouse_path", lambda *a, **kw: [])
+    monkeypatch.setattr(recorder, "generate_scroll_events", lambda *a, **kw: [])
+
+    # Make Path.glob(<output_path>.parent) find our pre-made fake video.
+    monkeypatch.setattr(
+        type(output_path.parent), "glob",
+        lambda self, pattern: [output_path],
+    )
+
+    recorder.record_site(
+        site_url="https://example.com",
+        output_path=output_path,
+        duration_sec=0.5,
+    )
+
+    # 1. The mute script was installed on the context.
+    assert context.add_init_script.called, (
+        "context.add_init_script must be called to mute page audio"
+    )
+    init_script = context.add_init_script.call_args.args[0]
+    assert init_script == recorder._MUTE_PAGE_SCRIPT
+    assert "muted = true" in init_script
+
+    # 2. The old buggy path is NOT used. page.evaluate(...) was never
+    #    called with a mute script before navigation.
+    for call in page.evaluate.call_args_list:
+        eval_arg = call.args[0] if call.args else ""
+        assert "muted" not in str(eval_arg), (
+            "page.evaluate with mute was the v1 bug; "
+            "use context.add_init_script instead"
+        )
+
+    # 3. add_init_script was called BEFORE goto (order matters — the
+    #    init script only runs on subsequent navigations).
+    add_init_idx = next(
+        i for i, c in enumerate(context.method_calls)
+        if c[0] == "add_init_script"
+    )
+    new_page_idx = next(
+        i for i, c in enumerate(context.method_calls)
+        if c[0] == "new_page"
+    )
+    assert add_init_idx < new_page_idx, (
+        "add_init_script must be called before new_page()"
+    )

@@ -15,6 +15,20 @@ def is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+def _escape_applescript_string(value: str) -> str:
+    """Escape `value` for embedding inside an AppleScript double-quoted literal.
+
+    AppleScript's `"..."` literal terminates at the next unescaped `"`. We
+    therefore escape both backslashes (so a literal backslash survives)
+    and double quotes (so a `"` in the user-supplied string doesn't close
+    the literal early and inject arbitrary AppleScript). Without this,
+    any double quote in `title`/`body`/`sound` breaks the osascript call
+    with a syntax error, and any AppleScript metacharacter silently drops
+    the rest of the string.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def notify(title: str, body: str, sound: str = "default") -> None:
     """Display a macOS notification. No-op on non-macOS. Never raises.
 
@@ -24,8 +38,9 @@ def notify(title: str, body: str, sound: str = "default") -> None:
     if not is_macos():
         return
     script = (
-        f'display notification "{body}" with title "{title}" '
-        f'sound name "{sound}"'
+        f'display notification "{_escape_applescript_string(body)}" '
+        f'with title "{_escape_applescript_string(title)}" '
+        f'sound name "{_escape_applescript_string(sound)}"'
     )
     try:
         subprocess.run(

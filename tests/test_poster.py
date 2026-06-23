@@ -34,6 +34,7 @@ def _make_settings(**overrides) -> Settings:
         r2_access_key_id="r2ak",
         r2_secret_access_key="r2sk",
         r2_bucket_name="stumble",
+        r2_endpoint_url="https://account.r2.cloudflarestorage.com",
         r2_public_url_base="https://media.example.com",
     )
     defaults.update(overrides)
@@ -126,6 +127,7 @@ def test_upload_to_r2_returns_public_url(tmp_path: Path) -> None:
     """The function should return the public URL of the uploaded file."""
     settings = _make_settings(
         r2_bucket_name="stumble",
+        r2_endpoint_url="https://account.r2.cloudflarestorage.com",
         r2_public_url_base="https://media.example.com",
     )
     mp4 = tmp_path / "clip.mp4"
@@ -145,6 +147,33 @@ def test_upload_to_r2_returns_public_url(tmp_path: Path) -> None:
     assert call_args.args[0] == str(mp4)
     assert call_args.args[1] == "stumble"  # bucket
     assert call_args.args[2] == "42.mp4"  # key
+    # Regression: endpoint_url must be the R2 *API* endpoint, NOT the
+    # public CDN URL. v1 mixed these up; the public URL is for serving,
+    # not for the boto3 client to talk to.
+    boto3_kwargs = mock_boto3_client.call_args.kwargs
+    assert boto3_kwargs["endpoint_url"] == "https://account.r2.cloudflarestorage.com"
+    assert boto3_kwargs["endpoint_url"] != settings.r2_public_url_base
+
+
+def test_upload_to_r2_raises_when_endpoint_url_missing(tmp_path: Path) -> None:
+    """If R2_ENDPOINT_URL is not set, fail with a clear message before
+    boto3 makes a confusing network error."""
+    settings = _make_settings(r2_endpoint_url="")
+    mp4 = tmp_path / "clip.mp4"
+    mp4.write_bytes(b"fake mp4")
+
+    with pytest.raises(RuntimeError, match="R2_ENDPOINT_URL is not set"):
+        poster.upload_to_r2(mp4, settings=settings, clip_id=42)
+
+
+def test_upload_to_r2_raises_when_public_url_base_missing(tmp_path: Path) -> None:
+    """If R2_PUBLIC_URL_BASE is not set, fail with a clear message."""
+    settings = _make_settings(r2_public_url_base="")
+    mp4 = tmp_path / "clip.mp4"
+    mp4.write_bytes(b"fake mp4")
+
+    with pytest.raises(RuntimeError, match="R2_PUBLIC_URL_BASE is not set"):
+        poster.upload_to_r2(mp4, settings=settings, clip_id=42)
 
 
 # ---------------------------------------------------------------------------
